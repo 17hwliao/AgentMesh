@@ -23,16 +23,39 @@ const (
 
 // Server is intentionally local-only in this first mock gateway stage.
 type Server struct {
-	router router.Streamer
+	router    router.Streamer
+	providers []provider.Provider
 }
 
-func New(streamer router.Streamer) *Server { return &Server{router: streamer} }
+func New(streamer router.Streamer) *Server { return NewWithHealth(streamer) }
+
+func NewWithHealth(streamer router.Streamer, providers ...provider.Provider) *Server {
+	return &Server{router: streamer, providers: append([]provider.Provider(nil), providers...)}
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
+	mux.HandleFunc("/health/providers", s.handleProviderHealth)
 	mux.HandleFunc(chatPath, s.handleChat)
 	return mux
+}
+
+func (s *Server) handleProviderHealth(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	type status struct {
+		Name    string `json:"name"`
+		Healthy bool   `json:"healthy"`
+	}
+	result := make([]status, 0, len(s.providers))
+	for _, candidate := range s.providers {
+		result = append(result, status{Name: candidate.Name(), Healthy: candidate.Health(request.Context()) == nil})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"providers": result})
 }
 
 // ValidateListenAddress rejects wildcard, LAN, and IPv6 bindings. The mock

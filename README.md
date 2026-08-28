@@ -34,6 +34,24 @@ go run ./cmd/sql-diagnose-cli --sql 'SELECT id FROM users WHERE status = ''activ
 若已经转发任一数据块，后续失败只产生 `stream_interrupted`，绝不切换模型。SQL CLI 只把 SQL 当作提示文本，
 不会执行 SQL。没有密钥、真实模型调用或 Docker 操作。
 
+## 1.2 真实 Provider Adapter（002）
+
+Ark 与 Ollama Adapter 已具备离线 fixture 测试，但默认仍为 `--providers mock`。只有操作者显式选择
+`--providers ark,ollama` 时，服务才读取以下进程环境变量：`ARK_BASE_URL`、`ARK_MODEL`、`ARK_API_KEY`、
+`OLLAMA_BASE_URL`、`OLLAMA_MODEL`。不要把这些值写入 flags、配置文件、日志、终端录制或 Git。
+
+```powershell
+go run ./cmd/api --providers ark,ollama
+```
+
+任一必填值缺失或格式无效时，服务在创建 HTTP client 前以 `provider_configuration_missing` 或
+`provider_configuration_invalid` 退出，且不会尝试 Provider 网络连接。`GET /health/providers` 只返回当前
+Provider 的名称和布尔健康状态；它不返回 endpoint、模型或密钥，且 health 成功不等于一次 chat 流成功。
+
+本仓库在 2026-08-28 的受控 T003 运行中，五个必需环境变量均不存在；上述命令实际返回
+`provider_configuration_missing`、exit 1，Provider 尝试数为 0。真实调用即使成功也只证明本次 Adapter
+可连接，不表示已实现租户鉴权、配额、账单或精确 Token 计费。
+
 ## 2. 问题边界
 
 ### 要解决
