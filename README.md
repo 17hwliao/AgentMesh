@@ -11,6 +11,29 @@ AgentMesh 是面向多个 AI 应用的 Go 模型运行时。它统一处理模�
 
 这证明它是可复用平台，而不是 SQL Sentinel 的内部工具。
 
+## 1.1 当前可运行切片（001）
+
+当前仓库已提供一个**仅本机、仅 mock** 的最小 SSE 网关，以及两个通过 HTTP 使用它的 CLI。它用于验证
+Provider 路由、首块前 fallback、SSE 转发和取消传播；不表示 Ark/豆包、Ollama、API Key、Redis、MySQL、
+配额或账单已接入。
+
+在第一个终端启动（只接受 `127.0.0.1:PORT`，拒绝局域网和通配监听）：
+
+```powershell
+go run ./cmd/api --addr 127.0.0.1:18080
+```
+
+在另一个终端分别运行两个客户端：
+
+```powershell
+go run ./cmd/summary-cli --text 'AgentMesh streams local mock output.'
+go run ./cmd/sql-diagnose-cli --sql 'SELECT id FROM users WHERE status = ''active'''
+```
+
+两条命令都会得到 `mock response`。默认 primary mock 在首个 SSE 数据块前失败，Router 因而使用 fallback mock；
+若已经转发任一数据块，后续失败只产生 `stream_interrupted`，绝不切换模型。SQL CLI 只把 SQL 当作提示文本，
+不会执行 SQL。没有密钥、真实模型调用或 Docker 操作。
+
 ## 2. 问题边界
 
 ### 要解决
