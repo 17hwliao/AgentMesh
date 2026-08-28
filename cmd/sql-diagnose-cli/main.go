@@ -28,7 +28,7 @@ func main() {
 		{Role: "system", Content: "Describe SQL diagnostic considerations. Do not execute the SQL."},
 		{Role: "user", Content: *sql},
 	}
-	if err := gatewayclient.Stream(ctx, *endpoint, *model, messages, os.Stdout); err != nil {
+	if err := gatewayclient.Stream(ctx, *endpoint, os.Getenv("AGENTMESH_API_KEY"), *model, messages, os.Stdout); err != nil {
 		log.Fatal(err)
 	}
 	fmt.Fprintln(os.Stdout)

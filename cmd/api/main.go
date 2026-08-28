@@ -7,9 +7,10 @@ import (
 	"net/http"
 	"os"
 
+	"agentmesh/internal/auth"
 	"agentmesh/internal/gateway"
-	"agentmesh/internal/router"
 	"agentmesh/internal/runtime"
+	"agentmesh/internal/tenant"
 )
 
 func main() {
@@ -25,6 +26,20 @@ func main() {
 		log.Fatal(err)
 	}
 
+	logicalProviders, err := runtime.Selection(*providerOrder)
+	if err != nil {
+		if code, ok := runtime.IsConfigurationError(err); ok {
+			log.Fatal(code)
+		}
+		log.Fatal("provider_selection_invalid")
+	}
+	store, err := auth.Bootstrap(os.Getenv)
+	if err != nil {
+		if code, ok := auth.IsConfigurationError(err); ok {
+			log.Fatal(code)
+		}
+		log.Fatal("auth_configuration_invalid")
+	}
 	providers, err := runtime.Build(*providerOrder, os.Getenv)
 	if err != nil {
 		if code, ok := runtime.IsConfigurationError(err); ok {
@@ -32,7 +47,13 @@ func main() {
 		}
 		log.Fatal("provider_configuration_invalid")
 	}
-	server := gateway.NewWithHealth(router.New(providers...), providers...)
+	resolver, err := tenant.NewResolver(store, logicalProviders, providers)
+	if err != nil {
+		log.Fatal("tenant_route_configuration_invalid")
+	}
+	server := gateway.NewWithTenantRouting(resolver)
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
-	log.Fatal(http.ListenAndServe(*address, server.Handler()))
+	log.Fatal(http.ListenAndServe(*address, server.AuthenticatedHandler(func(next http.Handler) http.Handler {
+		return auth.Authenticate(store, next)
+	})))
 }

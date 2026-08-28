@@ -3,6 +3,8 @@ package gatewayclient
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,9 @@ func TestStreamWritesSSETextDeltas(t *testing.T) {
 		if request.URL.Path != chatPath {
 			t.Fatalf("path = %s", request.URL.Path)
 		}
+		if request.Header.Get("Authorization") == "" {
+			t.Fatal("missing Authorization header")
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"mock \"}}]}\n\n")
 		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"response\"}}]}\n\n")
@@ -24,12 +29,28 @@ func TestStreamWritesSSETextDeltas(t *testing.T) {
 	defer server.Close()
 
 	var output bytes.Buffer
-	err := Stream(context.Background(), server.URL, "mock", []provider.Message{{Role: "user", Content: "hello"}}, &output)
+	err := Stream(context.Background(), server.URL, randomAPIKey(t), "mock", []provider.Message{{Role: "user", Content: "hello"}}, &output)
 	if err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
 	if output.String() != "mock response" {
 		t.Fatalf("output = %q", output.String())
+	}
+}
+
+func randomAPIKey(t *testing.T) string {
+	t.Helper()
+	b := make([]byte, 24)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(b)
+}
+
+func TestStreamRejectsMissingAPIKeyBeforeRequest(t *testing.T) {
+	var output bytes.Buffer
+	if err := Stream(context.Background(), "http://127.0.0.1:18080", "", "mock", nil, &output); err == nil || err.Error() != "api_key_missing" {
+		t.Fatalf("Stream() error=%v", err)
 	}
 }
 

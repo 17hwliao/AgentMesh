@@ -26,7 +26,7 @@ func (e *ConfigurationError) Error() string { return e.Code }
 // Build returns mock by default. A real route is opt-in and cannot mix mock
 // with real providers, preventing accidental network attempts in local demos.
 func Build(orderRaw string, lookup func(string) string) ([]provider.Provider, error) {
-	order, err := parseOrder(orderRaw)
+	order, err := Selection(orderRaw)
 	if err != nil {
 		return nil, err
 	}
@@ -55,6 +55,11 @@ func Build(orderRaw string, lookup func(string) string) ([]provider.Provider, er
 	}
 	return providers, nil
 }
+
+// Selection parses the logical adapter names used by tenant routing.  Provider
+// construction remains exclusively in Build so a tenant declaration can never
+// create, mix, or otherwise widen the process-level provider set.
+func Selection(orderRaw string) ([]string, error) { return parseOrder(orderRaw) }
 
 func parseOrder(raw string) ([]string, error) {
 	raw = strings.TrimSpace(raw)

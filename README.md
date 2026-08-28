@@ -52,6 +52,28 @@ Provider 的名称和布尔健康状态；它不返回 endpoint、模型或密�
 `provider_configuration_missing`、exit 1，Provider 尝试数为 0。真实调用即使成功也只证明本次 Adapter
 可连接，不表示已实现租户鉴权、配额、账单或精确 Token 计费。
 
+## 1.3 本机 API Key 与租户路由（003）
+
+003 只实现离线、本进程内存 seed：启动时从 `AGENTMESH_BOOTSTRAP_API_KEY` 派生 API Key 的 prefix 与
+SHA-256 hash，内存记录绝不保存原始 key。还必须提供 `AGENTMESH_BOOTSTRAP_TENANT_ID` 和严格 JSON 的
+`AGENTMESH_BOOTSTRAP_MODEL_ROUTES`（模型到 `mock` 的顺序声明）。原始值只能由当前 shell 的安全方式临时
+生成；不得写入 flags、文件、日志、终端录制或 Git。两个 CLI 只从 `AGENTMESH_API_KEY` 读取同一原始值，并发送
+`Authorization: Bearer`，不提供 key flag。
+
+`POST /v1/chat/completions` 和 `GET /health/providers` 现在都需要认证；缺失、畸形、未知或禁用 key 统一返回
+401 `auth_failed`，且不会读取 chat body 或调用 Provider。认证后才解码 chat 请求：tenant 未允许该 model 返回
+403 `model_not_allowed`，仍为 0 Provider attempt。`GET /health/providers` 只显示当前 tenant 至少一个模型允许的
+Provider 名称及健康状态；`GET /healthz` 仍是唯一公开端点。
+
+tenant route 只是逻辑名称声明，实际 Adapter 始终由 002 的 `runtime.Build` 创建。启动前会拒绝 mock 与真实
+Provider 混排、乱序或越出全局 Provider 集合的 tenant route。`QuotaGate` 目前固定 allow；`quota_exhausted`
+仅保留接口和 HTTP 契约，尚未启用 Redis、扣减、账单或任何运行时配额判断。
+
+2026-08-28 的 T003 受控本机运行使用一次性的随机 key（未落盘），以 `mock-model → mock` 启动
+`127.0.0.1` 网关：两个 CLI 均实际输出 `mock response`；无 Bearer 请求返回 401 `auth_failed`；有效 key 请求
+未授权 model 返回 403 `model_not_allowed`。注入式 QuotaGate 测试证明 429 `quota_exhausted` 路径为 0 Provider
+attempt，但默认进程不会声称配额已启用。该运行未使用真实 Provider 或 Docker。
+
 ## 2. 问题边界
 
 ### 要解决

@@ -28,10 +28,14 @@ func ValidateEndpoint(raw string) error {
 	return nil
 }
 
-// Stream sends one stream=true chat request and writes only text deltas to out.
-func Stream(ctx context.Context, endpoint, model string, messages []provider.Message, out io.Writer) error {
+// Stream sends one authenticated stream=true chat request and writes only text
+// deltas to out. The raw key is caller-owned and is never logged or retained.
+func Stream(ctx context.Context, endpoint, apiKey, model string, messages []provider.Message, out io.Writer) error {
 	if err := ValidateEndpoint(endpoint); err != nil {
 		return err
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		return errors.New("api_key_missing")
 	}
 	body, err := json.Marshal(map[string]any{"model": model, "messages": messages, "stream": true})
 	if err != nil {
@@ -42,6 +46,7 @@ func Stream(ctx context.Context, endpoint, model string, messages []provider.Mes
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer "+apiKey)
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return err
