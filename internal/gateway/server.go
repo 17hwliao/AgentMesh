@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"agentmesh/internal/auth"
+	"agentmesh/internal/observability"
 	"agentmesh/internal/provider"
 	"agentmesh/internal/router"
 )
@@ -22,6 +23,9 @@ const (
 	maxRequestBytes = 64 << 10
 	modelNotAllowed = "model_not_allowed"
 	quotaExhausted  = "quota_exhausted"
+	tracePath       = "/v1/observability/traces/{trace_id}"
+	traceHeader     = "X-AgentMesh-Trace-ID"
+	traceNotFound   = "trace_not_found"
 )
 
 // TenantResolver supplies only the already-authorized, already-constructed
@@ -29,6 +33,11 @@ const (
 type TenantResolver interface {
 	Streamer(tenantID, model string) (router.Streamer, bool)
 	VisibleProviders(tenantID string) []provider.Provider
+}
+
+type observedTenantResolver interface {
+	TenantResolver
+	StreamerWithObserver(tenantID, model string, observer router.Observer) (router.Streamer, bool)
 }
 
 // QuotaGate is deliberately allow-only in this slice. Redis reservations and
@@ -48,6 +57,7 @@ type Server struct {
 	providers      []provider.Provider
 	tenantResolver TenantResolver
 	quota          QuotaGate
+	recorder       *observability.Recorder
 }
 
 func New(streamer router.Streamer) *Server { return NewWithHealth(streamer) }
@@ -59,11 +69,15 @@ func NewWithHealth(streamer router.Streamer, providers ...provider.Provider) *Se
 // NewWithTenantRouting keeps route declarations separate from construction:
 // Resolver receives the actual adapters built by runtime.Build.
 func NewWithTenantRouting(resolver TenantResolver, quota ...QuotaGate) *Server {
+	return NewWithTenantRoutingAndRecorder(resolver, nil, quota...)
+}
+
+func NewWithTenantRoutingAndRecorder(resolver TenantResolver, recorder *observability.Recorder, quota ...QuotaGate) *Server {
 	gate := QuotaGate(allowQuotaGate{})
 	if len(quota) == 1 && quota[0] != nil {
 		gate = quota[0]
 	}
-	return &Server{tenantResolver: resolver, quota: gate}
+	return &Server{tenantResolver: resolver, quota: gate, recorder: recorder}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -81,6 +95,7 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
 	mux.Handle(chatPath, authenticate(http.HandlerFunc(s.handleChat)))
+	mux.Handle(tracePath, authenticate(http.HandlerFunc(s.handleTrace)))
 	return mux
 }
 
@@ -147,24 +162,40 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 	}
 
 	streamer := s.router
+	var session *observability.Session
+	var tenantID string
 	if s.tenantResolver != nil {
-		tenantID, ok := auth.TenantID(request.Context())
+		var ok bool
+		tenantID, ok = auth.TenantID(request.Context())
 		if !ok {
 			writeJSONError(w, http.StatusUnauthorized, auth.CodeFailed)
 			return
 		}
+		if s.recorder != nil {
+			session = s.recorder.Start(tenantID, input.Model)
+			if session.TraceID() != "" {
+				w.Header().Set(traceHeader, session.TraceID())
+			}
+		}
 		var allowed bool
-		streamer, allowed = s.tenantResolver.Streamer(tenantID, input.Model)
+		if observed, ok := s.tenantResolver.(observedTenantResolver); ok && session != nil {
+			streamer, allowed = observed.StreamerWithObserver(tenantID, input.Model, session)
+		} else {
+			streamer, allowed = s.tenantResolver.Streamer(tenantID, input.Model)
+		}
 		if !allowed {
+			completeTrace(session, modelNotAllowed, false)
 			writeJSONError(w, http.StatusForbidden, modelNotAllowed)
 			return
 		}
 		if !s.quota.Allow(request.Context(), tenantID, input.Model) {
+			completeTrace(session, quotaExhausted, false)
 			writeJSONError(w, http.StatusTooManyRequests, quotaExhausted)
 			return
 		}
 	}
 	if streamer == nil {
+		completeTrace(session, "provider_unavailable", false)
 		writeJSONError(w, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
@@ -186,6 +217,7 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		})
 	})
 	if err == nil {
+		completeTrace(session, "success", false)
 		if !started {
 			start()
 		}
@@ -193,14 +225,42 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		completeTrace(session, "cancelled", true)
 		return
 	}
 	if started {
+		completeTrace(session, streamErrorCode(err), false)
 		_ = writeSSE(w, map[string]any{"error": map[string]string{"code": streamErrorCode(err)}})
 		_ = writeDone(w)
 		return
 	}
+	completeTrace(session, streamErrorCode(err), false)
 	writeJSONError(w, http.StatusServiceUnavailable, streamErrorCode(err))
+}
+
+func (s *Server) handleTrace(w http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+		return
+	}
+	tenantID, ok := auth.TenantID(request.Context())
+	if !ok || s.recorder == nil {
+		writeJSONError(w, http.StatusNotFound, traceNotFound)
+		return
+	}
+	trace, ok := s.recorder.Get(tenantID, request.PathValue("trace_id"))
+	if !ok {
+		writeJSONError(w, http.StatusNotFound, traceNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(trace)
+}
+
+func completeTrace(session *observability.Session, resultCode string, cancelled bool) {
+	if session != nil {
+		session.Complete(resultCode, cancelled)
+	}
 }
 
 func decodeChatRequest(request *http.Request) (chatRequest, error) {

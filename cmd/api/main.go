@@ -9,6 +9,7 @@ import (
 
 	"agentmesh/internal/auth"
 	"agentmesh/internal/gateway"
+	"agentmesh/internal/observability"
 	"agentmesh/internal/runtime"
 	"agentmesh/internal/tenant"
 )
@@ -51,7 +52,7 @@ func main() {
 	if err != nil {
 		log.Fatal("tenant_route_configuration_invalid")
 	}
-	server := gateway.NewWithTenantRouting(resolver)
+	server := gateway.NewWithTenantRoutingAndRecorder(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil))
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
 	log.Fatal(http.ListenAndServe(*address, server.AuthenticatedHandler(func(next http.Handler) http.Handler {
 		return auth.Authenticate(store, next)

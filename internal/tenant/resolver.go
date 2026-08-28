@@ -49,12 +49,19 @@ func NewResolver(store Store, logical []string, providers []provider.Provider) (
 // order. A route that is not an ordered global subset is refused before any
 // provider attempt.
 func (r *Resolver) Streamer(tenantID, model string) (router.Streamer, bool) {
+	return r.StreamerWithObserver(tenantID, model, nil)
+}
+
+// StreamerWithObserver preserves the declared tenant route while attaching an
+// optional passive Router observer. The observer cannot construct or reorder
+// adapters.
+func (r *Resolver) StreamerWithObserver(tenantID, model string, observer router.Observer) (router.Streamer, bool) {
 	route, ok := r.store.Route(tenantID, model)
 	if !ok || !r.validRoute(route) {
 		return nil, false
 	}
 	if r.mockMode {
-		return router.New(r.providers...), true
+		return router.NewWithObserver(r.providers, observer), true
 	}
 	selected := make([]provider.Provider, 0, len(route))
 	for _, name := range route {
@@ -64,7 +71,7 @@ func (r *Resolver) Streamer(tenantID, model string) (router.Streamer, bool) {
 		}
 		selected = append(selected, candidate)
 	}
-	return router.New(selected...), true
+	return router.NewWithObserver(selected, observer), true
 }
 
 // VisibleProviders returns only adapters authorized by at least one model

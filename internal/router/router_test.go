@@ -67,6 +67,63 @@ func TestCancellationReachesMockAndReturns(t *testing.T) {
 	}
 }
 
+func TestObserverRecordsFallbackWithoutChangingRoute(t *testing.T) {
+	primary := provider.NewMock(provider.MockConfig{Name: "primary", FailBeforeFirst: true, FailAfterChunks: -1})
+	fallback := provider.NewMock(provider.MockConfig{Name: "fallback", Chunks: []string{"ok"}, FailAfterChunks: -1})
+	observer := &collectingObserver{}
+	if err := NewWithObserver([]provider.Provider{primary, fallback}, observer).Stream(context.Background(), request(), func(provider.Chunk) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if primary.Calls() != 1 || fallback.Calls() != 1 || len(observer.events) != 5 || observer.events[1].Outcome != "failed_before_first_chunk" || observer.events[4].Outcome != "succeeded" {
+		t.Fatalf("calls=(%d,%d) events=%+v", primary.Calls(), fallback.Calls(), observer.events)
+	}
+}
+
+func TestObserverPanicOrBlockDoesNotDelayStream(t *testing.T) {
+	assertUnblocked := func(t *testing.T, observer Observer) {
+		done := make(chan error, 1)
+		go func(observer Observer) {
+			candidate := provider.NewMock(provider.MockConfig{Name: "only", Chunks: []string{"ok"}, FailAfterChunks: -1})
+			done <- NewWithObserver([]provider.Provider{candidate}, observer).Stream(context.Background(), request(), func(provider.Chunk) error { return nil })
+		}(observer)
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Stream() error=%v", err)
+			}
+		case <-time.After(250 * time.Millisecond):
+			t.Fatal("observer delayed stream")
+		}
+	}
+	assertUnblocked(t, panicObserver{})
+	blocking := blockingObserver{entered: make(chan struct{}), release: make(chan struct{})}
+	assertUnblocked(t, blocking)
+	close(blocking.release)
+}
+
+type collectingObserver struct{ events []AttemptEvent }
+
+func (o *collectingObserver) Observe(event AttemptEvent) { o.events = append(o.events, event) }
+func (*collectingObserver) RouterObserverNonBlocking()   {}
+
+type panicObserver struct{}
+
+func (panicObserver) Observe(AttemptEvent) { panic("observer failure") }
+
+type blockingObserver struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (o blockingObserver) Observe(AttemptEvent) {
+	select {
+	case <-o.entered:
+	default:
+		close(o.entered)
+	}
+	<-o.release
+}
+
 func request() provider.ChatRequest {
 	return provider.ChatRequest{Model: "mock-model", Messages: []provider.Message{{Role: "user", Content: "hello"}}}
 }

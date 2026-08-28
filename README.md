@@ -74,6 +74,35 @@ Provider 混排、乱序或越出全局 Provider 集合的 tenant route。`Quota
 未授权 model 返回 403 `model_not_allowed`。注入式 QuotaGate 测试证明 429 `quota_exhausted` 路径为 0 Provider
 attempt，但默认进程不会声称配额已启用。该运行未使用真实 Provider 或 Docker。
 
+## 1.4 安全 Trace 与内存 Usage Record（004）
+
+每个通过认证、且能进入 tenant/model 路由的 chat 请求都会由服务端生成不可预测的 trace ID，并在响应开始 SSE
+前通过 `X-AgentMesh-Trace-ID` 返回。随后可使用同一个 API Key 查询：
+
+```text
+GET /v1/observability/traces/{trace_id}
+Authorization: Bearer <当前进程的临时 key>
+```
+
+查询只返回当前 tenant 的安全摘要：model、Provider attempt 名称/结果、首块与总耗时、稳定结果码、取消状态和
+Provider 明示的 usage。它绝不返回 tenant ID、prompt、messages、SSE delta、raw key/prefix/hash、endpoint 或
+Provider 原始错误；usage 没有被 Provider 明示时固定为 `usage_observed=false`，不伪造 Token 估算。跨 tenant、
+未知和未完成 trace 都统一为 404 `trace_not_found`，不暴露记录是否存在，也不触发 Provider。
+
+Recorder 是固定容量、进程内的诊断环：只淘汰最早完成记录，重启即丢失；若容量里全是 pending，业务流仍继续，
+但该请求的 trace 可能不可查询。它不是审计、账单、持久化 `usage_records` 表或后续 Reservation attempt 凭据，
+未接 OTel、Prometheus、MySQL、Redis 或 Eino Callback。
+
+在 Windows 本机可运行已验证的 stage-1 演示：
+
+```powershell
+make demo-stage-1
+```
+
+该 target 临时生成随机 key、仅启动 `127.0.0.1` mock 网关，分别运行两个 CLI，查询一条 trace，并执行取消传播测试；
+默认 mock primary 在首块前失败、fallback 输出 `mock response`。脚本会结束进程并清理临时日志，不写入 key；不启动
+Docker 或真实 Provider。公开决策记录见 `decisions/`，私有简历/面试资料不进入 Git。
+
 ## 2. 问题边界
 
 ### 要解决
