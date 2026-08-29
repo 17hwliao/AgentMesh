@@ -103,6 +103,22 @@ make demo-stage-1
 默认 mock primary 在首块前失败、fallback 输出 `mock response`。脚本会结束进程并清理临时日志，不写入 key；不启动
 Docker 或真实 Provider。公开决策记录见 `decisions/`，私有简历/面试资料不进入 Git。
 
+## 1.5 Reservation 状态机预验证（005）
+
+005 只验证未来配额链路的领域状态，尚未接入 Gateway 或任何真实余额：内存 Reservation 从 `creating` 进入
+`reserved`，随后在没有 started attempt 时可以 `cancelled`；一旦先记录了 started attempt，首块前失败、流中断、
+Context 取消或未知上游结果都只能 `settled`。`reserved` 在这里仅表示状态机通过，**不表示** Redis 已预扣、MySQL
+已持久化或 tenant 余额已冻结。
+
+每个变更携带 `reservation_id`、`expected_version` 和 operation。相同的成功操作重放返回第一次结果；同版本不同
+操作或版本冲突会被拒绝，拒绝本身不会进入幂等 journal。`expired_pending` 是 future reconciler 的非终态，普通
+Cancel 无法直接裁决它。内存 Repository 只用于离线语义和 race 测试：重启丢失、没有跨进程锁、没有迁移、没有
+Redis Lua/MySQL/SQLite、reconciler、usage_outbox、对账或 `demo-stage-4`，因此不能作为“不透支”或生产一致性的证据。
+
+2026-08-29 的受控测试实际通过：attempt 前取消与同操作重放、attempt 后 `reservation_must_settle`、版本/tenant
+冲突、`expired_pending` 禁止普通取消，以及 32 个并发相同 `StartAttempt` 最终只留下一个 attempt。它验证的是状态边界，
+不是对真实 Provider、余额或持久化系统的实验。
+
 ## 2. 问题边界
 
 ### 要解决
