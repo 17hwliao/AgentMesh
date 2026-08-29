@@ -181,6 +181,22 @@ MySQL/Redis/Docker）；`make verify-real-storage` 保持 `verification_unavaila
 
 本轮验收之后有两项明确后置工作：以 `usage_outbox` 聚合并进行 Redis/Provider/MySQL 三方对账；由操作者提供专用非生产 MySQL/Redis 后重跑 `make verify-real-storage`。两项均未在本仓库写成已完成。
 
+## 1.9 Usage Ledger（011）
+
+011 在 `migrations/002_usage_ledger.sql` 定义 `usage_outbox` 和 `usage_records`。每个新的 terminal Reservation 在其
+MySQL 终态更新所在的同一事务写入安全 outbox snapshot；显式 drain 才会以 `reservation_id` 幂等投影为 usage record。
+操作者必须先显式应用 002 migration；历史 terminal Reservation 不会被回填，因为不能补造当时的可信结算证据。
+
+`go run ./cmd/usage-outbox-drain` 只投影 record，`go run ./cmd/usage-reconcile` 只读对账。两者仅从
+`AGENTMESH_QUOTA_MYSQL_DSN` 和 `AGENTMESH_QUOTA_REDIS_URL` 读取存储配置；缺任一配置时，在连接前输出
+`verification_unavailable/quota_configuration_missing`、`network_attempts=0`、exit 1。2026-08-30 本机已实际复核
+该受控拒绝，未连接 MySQL/Redis。
+
+对账仅逐 reservation 比较 MySQL 终态、outbox、usage record 和对应 Redis settle/cancel operation，结果为
+`reconciliation_complete`、`outbox_missing`、`usage_record_missing`、`redis_operation_missing` 或 `ledger_mismatch`。
+它不重建 Redis 全局余额、不退款、不补写、不自动修账。usage record 是已结算的安全摘要，不是 tokenizer、价格或精确账单；
+本机仍没有真实 MySQL/Redis endpoint 成功实证。
+
 ## 2. 问题边界
 
 ### 要解决

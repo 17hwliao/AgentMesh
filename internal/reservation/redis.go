@@ -101,6 +101,43 @@ func (s *RedisQuotaStore) ReserveApplied(ctx context.Context, tenantID, reservat
 	return value == 1, nil
 }
 
+// TerminalOperation reads one already-written idempotency result. It never
+// reads a tenant balance or invokes a mutating Redis Lua script.
+func (s *RedisQuotaStore) TerminalOperation(ctx context.Context, tenantID, reservationID string, version uint64, state State) (QuotaOperationResult, bool, error) {
+	if s == nil || s.evaluator == nil || tenantID == "" || reservationID == "" || version == 0 {
+		return QuotaOperationResult{}, false, domainError(CodeStateInvalid)
+	}
+	operation := ""
+	switch state {
+	case Settled:
+		operation = "settle"
+	case Cancelled:
+		operation = "cancel"
+	default:
+		return QuotaOperationResult{}, false, domainError(CodeStateInvalid)
+	}
+	raw, err := s.evaluator.Eval(ctx, readOperationLua, []string{operationKey(tenantID, reservationID, version, operation)})
+	if err != nil {
+		return QuotaOperationResult{}, false, err
+	}
+	items, ok := raw.([]any)
+	if !ok || len(items) != 3 {
+		return QuotaOperationResult{}, false, errors.New("invalid redis terminal operation")
+	}
+	code, ok := stringValue(items[0])
+	if !ok {
+		return QuotaOperationResult{}, false, errors.New("invalid redis terminal operation code")
+	}
+	if code == "missing" {
+		return QuotaOperationResult{}, false, nil
+	}
+	result, err := decodeQuotaOperation(items)
+	if err != nil {
+		return QuotaOperationResult{}, false, err
+	}
+	return result, true, nil
+}
+
 func (s *RedisQuotaStore) run(ctx context.Context, script, tenantID, reservationID string, version uint64, operation string, args ...any) (QuotaOperationResult, error) {
 	if s == nil || s.evaluator == nil || tenantID == "" || reservationID == "" || version == 0 {
 		return QuotaOperationResult{}, domainError(CodeStateInvalid)
@@ -205,3 +242,7 @@ return result`
 
 const reserveAppliedLua = `if redis.call('GET', KEYS[1]) then return 1 end
 return 0`
+
+const readOperationLua = `local prior = redis.call('GET', KEYS[1])
+if not prior then return {'missing', 0, 0} end
+return cjson.decode(prior)`

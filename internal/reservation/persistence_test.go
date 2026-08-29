@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -115,6 +116,129 @@ func TestSQLRepositoryVersionConflictDoesNotCommit(t *testing.T) {
 	}
 }
 
+func TestSQLRepositoryTerminalWritesOutboxInSameTransaction(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	for _, testCase := range []struct {
+		name  string
+		state State
+		run   func(*SQLRepository) error
+	}{
+		{name: "settled", state: Settled, run: func(repo *SQLRepository) error {
+			_, err := repo.MarkSettled(context.Background(), "tenant-a", "reservation-a", 3, 24, 40, true, "provider_usage")
+			return err
+		}},
+		{name: "cancelled", state: Cancelled, run: func(repo *SQLRepository) error {
+			_, err := repo.MarkCancelled(context.Background(), "tenant-a", "reservation-a", 3)
+			return err
+		}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			tx := &fakeTransaction{rows: []sqlRow{reservationRow("reservation-a", testCase.state, 4, now)}}
+			repo := newSQLRepository(fakeDatabase{tx: tx}, func() time.Time { return now })
+			if err := testCase.run(repo); err != nil {
+				t.Fatal(err)
+			}
+			if !tx.committed || len(tx.execQueries) != 2 || !strings.Contains(tx.execQueries[1], "INSERT INTO usage_outbox") || !strings.Contains(tx.execQueries[1], "SELECT r.reservation_id") {
+				t.Fatalf("committed=%t queries=%q", tx.committed, tx.execQueries)
+			}
+		})
+	}
+}
+
+func TestSQLRepositoryTerminalOutboxFailureRollsBack(t *testing.T) {
+	tx := &fakeTransaction{execFailureAt: 2, execErr: errors.New("outbox unavailable")}
+	repo := newSQLRepository(fakeDatabase{tx: tx}, nil)
+	_, err := repo.MarkSettled(context.Background(), "tenant-a", "reservation-a", 3, 24, 40, true, "provider_usage")
+	if err == nil || tx.committed || !tx.rolledBack {
+		t.Fatalf("err=%v committed=%t rolled_back=%t", err, tx.committed, tx.rolledBack)
+	}
+}
+
+func TestSQLRepositoryTerminalCommitFailureRollsBackOutbox(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	tx := &fakeTransaction{rows: []sqlRow{reservationRow("reservation-a", Cancelled, 4, now)}, commitErr: errors.New("commit unavailable")}
+	repo := newSQLRepository(fakeDatabase{tx: tx}, func() time.Time { return now })
+	_, err := repo.MarkCancelled(context.Background(), "tenant-a", "reservation-a", 3)
+	if err == nil || tx.committed || !tx.rolledBack || len(tx.execQueries) != 2 {
+		t.Fatalf("err=%v committed=%t rolled_back=%t queries=%q", err, tx.committed, tx.rolledBack, tx.execQueries)
+	}
+}
+
+func TestSQLRepositoryDrainProjectsAndMarksOutboxInSingleTransaction(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	tx := &fakeTransaction{queryRows: []sqlRows{&fakeRows{values: [][]any{usageOutboxValues("reservation-a", Settled, now)}}}}
+	repo := newSQLRepository(fakeDatabase{tx: tx}, func() time.Time { return now })
+	projected, err := repo.DrainUsageOutbox(context.Background(), 8)
+	if err != nil || projected != 1 || !tx.committed {
+		t.Fatalf("projected=%d err=%v committed=%t", projected, err, tx.committed)
+	}
+	if len(tx.queryQueries) != 1 || !strings.Contains(tx.queryQueries[0], "FOR UPDATE SKIP LOCKED") {
+		t.Fatalf("claim query=%q", tx.queryQueries)
+	}
+	if len(tx.execQueries) != 2 || !strings.Contains(tx.execQueries[0], "INSERT INTO usage_records") || !strings.Contains(tx.execQueries[0], "ON DUPLICATE KEY") || !strings.Contains(tx.execQueries[1], "SET projected_at") {
+		t.Fatalf("projection queries=%q", tx.execQueries)
+	}
+}
+
+func TestSQLRepositoryDrainRollbackCanRetryWithoutDuplicateProjection(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	rolledBack := &fakeTransaction{queryRows: []sqlRows{&fakeRows{values: [][]any{usageOutboxValues("reservation-a", Settled, now)}}}, commitErr: errors.New("commit unavailable")}
+	retry := &fakeTransaction{queryRows: []sqlRows{&fakeRows{values: [][]any{usageOutboxValues("reservation-a", Settled, now)}}}}
+	repo := newSQLRepository(&fakeSequenceDatabase{transactions: []*fakeTransaction{rolledBack, retry}}, func() time.Time { return now })
+	if _, err := repo.DrainUsageOutbox(context.Background(), 1); err == nil || rolledBack.committed || !rolledBack.rolledBack {
+		t.Fatalf("first drain err=%v committed=%t rolled_back=%t", err, rolledBack.committed, rolledBack.rolledBack)
+	}
+	projected, err := repo.DrainUsageOutbox(context.Background(), 1)
+	if err != nil || projected != 1 || !retry.committed || len(retry.execQueries) != 2 {
+		t.Fatalf("retry projected=%d err=%v committed=%t queries=%q", projected, err, retry.committed, retry.execQueries)
+	}
+}
+
+func TestSQLRepositoryDrainConcurrentClaimProjectsOnce(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	claimed := &fakeTransaction{queryRows: []sqlRows{&fakeRows{values: [][]any{usageOutboxValues("reservation-a", Settled, now)}}}}
+	skipped := &fakeTransaction{queryRows: []sqlRows{&fakeRows{}}}
+	repo := newSQLRepository(&fakeSequenceDatabase{transactions: []*fakeTransaction{claimed, skipped}}, func() time.Time { return now })
+
+	var group sync.WaitGroup
+	results := make(chan int, 2)
+	errors := make(chan error, 2)
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			count, err := repo.DrainUsageOutbox(context.Background(), 1)
+			if err != nil {
+				errors <- err
+				return
+			}
+			results <- count
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errors)
+	for err := range errors {
+		t.Fatal(err)
+	}
+	projected := 0
+	for count := range results {
+		projected += count
+	}
+	if projected != 1 || len(claimed.execQueries) != 2 || len(skipped.execQueries) != 0 {
+		t.Fatalf("projected=%d claimed=%q skipped=%q", projected, claimed.execQueries, skipped.execQueries)
+	}
+}
+
+func TestSQLRepositoryDrainRecordFailureLeavesOutboxUnprojected(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	tx := &fakeTransaction{queryRows: []sqlRows{&fakeRows{values: [][]any{usageOutboxValues("reservation-a", Cancelled, now)}}}, execFailureAt: 1, execErr: errors.New("record unavailable")}
+	repo := newSQLRepository(fakeDatabase{tx: tx}, func() time.Time { return now })
+	if _, err := repo.DrainUsageOutbox(context.Background(), 1); err == nil || tx.committed || !tx.rolledBack || len(tx.execQueries) != 1 {
+		t.Fatalf("err=%v committed=%t rolled_back=%t queries=%q", err, tx.committed, tx.rolledBack, tx.execQueries)
+	}
+}
+
 func TestQuotaReservationMigrationDefinesEvidenceAndReconcileIndexes(t *testing.T) {
 	path := filepath.Join("..", "..", "migrations", "001_quota_reservations.sql")
 	content, err := os.ReadFile(path)
@@ -131,22 +255,68 @@ func TestQuotaReservationMigrationDefinesEvidenceAndReconcileIndexes(t *testing.
 	}
 }
 
+func TestUsageLedgerMigrationDefinesOnlyNewLedgerTables(t *testing.T) {
+	path := filepath.Join("..", "..", "migrations", "002_usage_ledger.sql")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, required := range []string{
+		"CREATE TABLE IF NOT EXISTS usage_outbox", "CREATE TABLE IF NOT EXISTS usage_records", "PRIMARY KEY (reservation_id)",
+		"ix_usage_outbox_unprojected", "fk_usage_outbox_reservation", "fk_usage_records_outbox",
+	} {
+		if !strings.Contains(string(content), required) {
+			t.Fatalf("migration missing %q", required)
+		}
+	}
+	for _, prohibited := range []string{"ALTER TABLE", "DROP TABLE", "INSERT INTO quota_reservations", "INSERT INTO usage_outbox"} {
+		if strings.Contains(string(content), prohibited) {
+			t.Fatalf("migration must not contain %q", prohibited)
+		}
+	}
+}
+
 type fakeDatabase struct{ tx *fakeTransaction }
 
 func (d fakeDatabase) BeginTx(context.Context, *sql.TxOptions) (sqlTransaction, error) {
 	return d.tx, nil
 }
 
+type fakeSequenceDatabase struct {
+	transactions []*fakeTransaction
+	next         int
+	mu           sync.Mutex
+}
+
+func (d *fakeSequenceDatabase) BeginTx(context.Context, *sql.TxOptions) (sqlTransaction, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.next >= len(d.transactions) {
+		return nil, errors.New("unexpected transaction")
+	}
+	transaction := d.transactions[d.next]
+	d.next++
+	return transaction, nil
+}
+
 type fakeTransaction struct {
-	results      []sqlResult
-	rows         []sqlRow
-	execQueries  []string
-	queryQueries []string
-	committed    bool
+	results       []sqlResult
+	rows          []sqlRow
+	queryRows     []sqlRows
+	execQueries   []string
+	queryQueries  []string
+	committed     bool
+	rolledBack    bool
+	execFailureAt int
+	execErr       error
+	commitErr     error
 }
 
 func (t *fakeTransaction) ExecContext(_ context.Context, query string, _ ...any) (sqlResult, error) {
 	t.execQueries = append(t.execQueries, query)
+	if t.execFailureAt == len(t.execQueries) {
+		return nil, t.execErr
+	}
 	if len(t.results) == 0 {
 		return fakeResult(1), nil
 	}
@@ -167,18 +337,44 @@ func (t *fakeTransaction) QueryRowContext(_ context.Context, query string, _ ...
 
 func (t *fakeTransaction) QueryContext(_ context.Context, query string, _ ...any) (sqlRows, error) {
 	t.queryQueries = append(t.queryQueries, query)
-	return fakeRows{}, nil
+	if len(t.queryRows) > 0 {
+		rows := t.queryRows[0]
+		t.queryRows = t.queryRows[1:]
+		return rows, nil
+	}
+	return &fakeRows{}, nil
 }
 
-func (t *fakeTransaction) Commit() error   { t.committed = true; return nil }
-func (t *fakeTransaction) Rollback() error { return nil }
+func (t *fakeTransaction) Commit() error {
+	if t.commitErr != nil {
+		return t.commitErr
+	}
+	t.committed = true
+	return nil
+}
+func (t *fakeTransaction) Rollback() error {
+	if !t.committed {
+		t.rolledBack = true
+	}
+	return nil
+}
 
-type fakeRows struct{}
+type fakeRows struct {
+	values [][]any
+	next   int
+}
 
-func (fakeRows) Next() bool        { return false }
-func (fakeRows) Scan(...any) error { return errors.New("no row") }
-func (fakeRows) Err() error        { return nil }
-func (fakeRows) Close() error      { return nil }
+func (r *fakeRows) Next() bool { return r.next < len(r.values) }
+func (r *fakeRows) Scan(destinations ...any) error {
+	if r.next >= len(r.values) {
+		return errors.New("no row")
+	}
+	err := fakeRow{values: r.values[r.next]}.Scan(destinations...)
+	r.next++
+	return err
+}
+func (fakeRows) Err() error   { return nil }
+func (fakeRows) Close() error { return nil }
 
 type fakeResult int64
 
@@ -206,6 +402,8 @@ func (r fakeRow) Scan(destinations ...any) error {
 			*destination = value.(bool)
 		case *sql.NullString:
 			*destination = value.(sql.NullString)
+		case *sql.NullTime:
+			*destination = value.(sql.NullTime)
 		case *time.Time:
 			*destination = value.(time.Time)
 		default:
@@ -220,4 +418,11 @@ func reservationRow(id string, state State, version uint64, now time.Time) fakeR
 		id, "tenant-a", "request-a", "mock-model", string(state), version,
 		uint64(64), uint64(0), uint64(0), false, sql.NullString{}, now, now, now,
 	}}
+}
+
+func usageOutboxValues(reservationID string, state State, now time.Time) []any {
+	return []any{
+		reservationID, "tenant-a", "request-a", "mock-model", string(state), uint64(3),
+		uint64(64), uint64(24), uint64(40), true, "provider_usage", now, sql.NullTime{}, now,
+	}
 }

@@ -40,6 +40,43 @@ type PersistentAttempt struct {
 	UsageObserved  bool
 }
 
+// UsageOutbox is the immutable, terminal snapshot written with a Reservation.
+// It intentionally contains no prompt, response, credential, or endpoint data.
+type UsageOutbox struct {
+	ReservationID    string
+	TenantID         string
+	RequestID        string
+	Model            string
+	FinalState       State
+	OperationVersion uint64
+	ReservedUnits    uint64
+	SettledUnits     uint64
+	ReleasedUnits    uint64
+	UsageObserved    bool
+	SettlementKind   string
+	FinalizedAt      time.Time
+	ProjectedAt      sql.NullTime
+	CreatedAt        time.Time
+}
+
+// UsageRecord is the durable projection of exactly one terminal outbox item.
+// It retains only the safe accounting snapshot, never request content.
+type UsageRecord struct {
+	ReservationID    string
+	TenantID         string
+	RequestID        string
+	Model            string
+	FinalState       State
+	OperationVersion uint64
+	ReservedUnits    uint64
+	SettledUnits     uint64
+	ReleasedUnits    uint64
+	UsageObserved    bool
+	SettlementKind   string
+	FinalizedAt      time.Time
+	RecordedAt       time.Time
+}
+
 type CreatePersistentReservation struct {
 	ID            string
 	TenantID      string
@@ -179,6 +216,9 @@ func (r *SQLRepository) MarkReserved(ctx context.Context, tenantID, reservationI
 	if err := exactlyOne(result); err != nil {
 		return PersistentReservation{}, err
 	}
+	if err := r.insertUsageOutbox(ctx, tx, tenantID, reservationID, expectedVersion); err != nil {
+		return PersistentReservation{}, err
+	}
 	value, err := scanReservation(tx.QueryRowContext(ctx, reservationByIDSQL, reservationID, tenantID))
 	if err != nil {
 		return PersistentReservation{}, err
@@ -287,6 +327,9 @@ func (r *SQLRepository) MarkSettled(ctx context.Context, tenantID, reservationID
 	if err := exactlyOne(result); err != nil {
 		return PersistentReservation{}, err
 	}
+	if err := r.insertUsageOutbox(ctx, tx, tenantID, reservationID, expectedVersion); err != nil {
+		return PersistentReservation{}, err
+	}
 	value, err := scanReservation(tx.QueryRowContext(ctx, reservationByIDSQL, reservationID, tenantID))
 	if err != nil {
 		return PersistentReservation{}, err
@@ -295,6 +338,67 @@ func (r *SQLRepository) MarkSettled(ctx context.Context, tenantID, reservationID
 		return PersistentReservation{}, err
 	}
 	return value, nil
+}
+
+// insertUsageOutbox snapshots the already-updated terminal row in the same
+// transaction. A failure prevents the terminal Reservation commit.
+func (r *SQLRepository) insertUsageOutbox(ctx context.Context, tx sqlTransaction, tenantID, reservationID string, operationVersion uint64) error {
+	result, err := tx.ExecContext(ctx, insertUsageOutboxSQL, operationVersion, reservationID, tenantID)
+	if err != nil {
+		return err
+	}
+	return exactlyOne(result)
+}
+
+// DrainUsageOutbox projects a claimed batch atomically. The record insertion
+// and projected marker either commit together or roll back together.
+func (r *SQLRepository) DrainUsageOutbox(ctx context.Context, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, domainError(CodeStateInvalid)
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, unprojectedUsageOutboxSQL, limit)
+	if err != nil {
+		return 0, err
+	}
+	items := make([]UsageOutbox, 0, limit)
+	for rows.Next() {
+		item, err := scanUsageOutbox(rows)
+		if err != nil {
+			return 0, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	if err := rows.Close(); err != nil {
+		return 0, err
+	}
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, insertUsageRecordSQL,
+			item.ReservationID, item.TenantID, item.RequestID, item.Model, item.FinalState, item.OperationVersion,
+			item.ReservedUnits, item.SettledUnits, item.ReleasedUnits, item.UsageObserved, item.SettlementKind,
+			item.FinalizedAt, r.now().UTC(),
+		); err != nil {
+			return 0, err
+		}
+		result, err := tx.ExecContext(ctx, markUsageOutboxProjectedSQL, r.now().UTC(), item.ReservationID)
+		if err != nil {
+			return 0, err
+		}
+		if err := exactlyOne(result); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return len(items), nil
 }
 
 // MarkCancelled is only legal when no durable started attempt exists.
@@ -310,6 +414,9 @@ func (r *SQLRepository) MarkCancelled(ctx context.Context, tenantID, reservation
 		return PersistentReservation{}, err
 	}
 	if err := exactlyOne(result); err != nil {
+		return PersistentReservation{}, err
+	}
+	if err := r.insertUsageOutbox(ctx, tx, tenantID, reservationID, expectedVersion); err != nil {
 		return PersistentReservation{}, err
 	}
 	value, err := scanReservation(tx.QueryRowContext(ctx, reservationByIDSQL, reservationID, tenantID))
@@ -407,6 +514,24 @@ func scanReservation(row sqlRow) (PersistentReservation, error) {
 	return scanReservationFields(row.Scan)
 }
 
+func scanUsageOutbox(row interface{ Scan(...any) error }) (UsageOutbox, error) {
+	var value UsageOutbox
+	var state string
+	err := row.Scan(
+		&value.ReservationID, &value.TenantID, &value.RequestID, &value.Model, &state, &value.OperationVersion,
+		&value.ReservedUnits, &value.SettledUnits, &value.ReleasedUnits, &value.UsageObserved, &value.SettlementKind,
+		&value.FinalizedAt, &value.ProjectedAt, &value.CreatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return UsageOutbox{}, domainError(CodeNotFound)
+	}
+	if err != nil {
+		return UsageOutbox{}, err
+	}
+	value.FinalState = State(state)
+	return value, nil
+}
+
 func scanReservationFields(scan func(...any) error) (PersistentReservation, error) {
 	var value PersistentReservation
 	var state string
@@ -490,6 +615,27 @@ const markCancelledSQL = `UPDATE quota_reservations AS r
     SET r.state = 'cancelled', r.version = r.version + 1, r.settlement_kind = 'cancelled', r.heartbeat_at = ?, r.updated_at = ?
     WHERE r.reservation_id = ? AND r.tenant_id = ? AND r.version = ? AND r.state IN ('creating', 'reserved', 'expired_pending')
       AND NOT EXISTS (SELECT 1 FROM provider_attempts AS a WHERE a.reservation_id = r.reservation_id)`
+
+const insertUsageOutboxSQL = `INSERT INTO usage_outbox
+    (reservation_id, tenant_id, request_id, model, final_state, operation_version, reserved_units, settled_units, released_units, usage_observed, settlement_kind, finalized_at, projected_at, created_at)
+    SELECT r.reservation_id, r.tenant_id, r.request_id, r.model, r.state, ?, r.reserved_units, r.settled_units, r.released_units, r.usage_observed, r.settlement_kind, r.updated_at, NULL, r.updated_at
+    FROM quota_reservations AS r
+    WHERE r.reservation_id = ? AND r.tenant_id = ? AND r.state IN ('settled', 'cancelled')`
+
+const usageOutboxColumns = `reservation_id, tenant_id, request_id, model, final_state, operation_version, reserved_units, settled_units, released_units, usage_observed, settlement_kind, finalized_at, projected_at, created_at`
+const unprojectedUsageOutboxSQL = `SELECT ` + usageOutboxColumns + ` FROM usage_outbox
+    WHERE projected_at IS NULL
+    ORDER BY created_at ASC
+    LIMIT ? FOR UPDATE SKIP LOCKED`
+
+const insertUsageRecordSQL = `INSERT INTO usage_records
+    (reservation_id, tenant_id, request_id, model, final_state, operation_version, reserved_units, settled_units, released_units, usage_observed, settlement_kind, finalized_at, recorded_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE reservation_id = reservation_id`
+
+const markUsageOutboxProjectedSQL = `UPDATE usage_outbox
+    SET projected_at = ?
+    WHERE reservation_id = ? AND projected_at IS NULL`
 
 const expiredCandidatesSQL = `SELECT ` + reservationColumns + `,
     EXISTS (SELECT 1 FROM provider_attempts AS a WHERE a.reservation_id = r.reservation_id),
