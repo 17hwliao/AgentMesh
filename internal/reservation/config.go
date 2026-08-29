@@ -23,7 +23,7 @@ const (
 // OpenConfiguredCoordinator keeps quota off unless explicitly opted in. When
 // enabled, both stores are verified before the HTTP server starts; later store
 // failures still reject the request before any Provider attempt.
-func OpenConfiguredCoordinator(lookup func(string) string) (*Coordinator, func(), error) {
+func OpenConfiguredCoordinator(lookup func(string) string) (StreamGate, func(), error) {
 	if lookup == nil {
 		return nil, func() {}, domainError(CodeQuotaConfigurationInvalid)
 	}

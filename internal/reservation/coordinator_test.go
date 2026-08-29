@@ -196,12 +196,18 @@ func TestReconcilerSettlesStartedAndCancelsOnlyAppliedUnstarted(t *testing.T) {
 	}
 }
 
-func TestOpenConfiguredCoordinatorStaysOffOrFailsBeforeNetwork(t *testing.T) {
+func TestOpenConfiguredCoordinatorReturnsNilStreamGateWhenDisabled(t *testing.T) {
 	gate, cleanup, err := OpenConfiguredCoordinator(func(string) string { return "" })
 	if err != nil || gate != nil {
 		t.Fatalf("disabled gate=%v err=%v", gate, err)
 	}
 	cleanup()
+
+}
+
+func TestOpenConfiguredCoordinatorFailsBeforeNetworkWhenConfigIncomplete(t *testing.T) {
+	var cleanup func()
+	var err error
 	_, cleanup, err = OpenConfiguredCoordinator(func(name string) string {
 		if name == quotaModeEnvironment {
 			return quotaModeReservation

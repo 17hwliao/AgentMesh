@@ -153,6 +153,34 @@ JSON 摘要，绝不含 DSN、URL、密码、prompt 或响应。若没有真实�
 `quota_configuration_missing`、`network_attempts=0`、`provider_attempts=0`、exit 1；因此本仓库仍没有一次真实 MySQL/Redis
 endpoint 成功事实。
 
+## 1.8 V0 验收归档（009）
+
+下表是截至 `e354a85` 的公开能力索引。它把可运行代码、离线/替身验证与真实外部成功分开描述；未写为“已验证”的项不能据此推断为生产可用。
+
+| 阶段 | 公开提交 | 已有证据 | 明确边界 |
+| --- | --- | --- | --- |
+| 001 | `e7d0a30` | loopback mock SSE、两个 CLI、首块前 fallback、取消传播；`make demo-stage-1` | 不调用真实 Provider |
+| 002 | `d6e96f1` | Ark SSE/Ollama NDJSON Adapter 与 fixture 测试 | 本机无 Provider 配置，仅有受控拒绝 |
+| 003 | `87b9d59` | API Key hash/prefix、常量时间比较、tenant route 与 0 Provider 拒绝测试 | tenant/key 为内存 bootstrap，不是管理面持久化 |
+| 004 | `d825f23` | 有界安全 trace/usage 摘要、tenant-scoped 查询、stage-1 demo | 非 OTel/Prometheus、非账单记录 |
+| 005 | `bdad00f` | Reservation 状态与并发边界的内存验证 | 不代表 Redis 预扣或持久化余额 |
+| 006 | `d1bf58a` | MySQL/Redis 适配、Lua、attempt 证据、reconciler 与进程内故障 demo | demo 不接触真实 endpoint；rune 不是精确 token 账单 |
+| 007 | `1741438` | Go 文件 LF 属性与 `gofmt -l .` 归零 | 仅跨平台工位卫生 |
+| 008 | `e354a85` | 真实存储验证器、migration 形状核验、namespace-scoped recovery 编排 | 本机缺配置，真实运行是 0 网络尝试的受控拒绝 |
+
+归档重跑曾暴露 008 引入的 quota-disabled typed-nil 回归：`*Coordinator` 赋给 `StreamGate` 接口后会绕过 nil
+判断，导致认证后的 chat 请求 panic。009 将配置函数改为返回接口类型的无类型 nil，并增加两个并发真实 HTTP/SSE
+fallback 回归请求；它恢复既有 mock 路径，不代表新的真实 Provider 或存储验证。
+
+2026-08-29 的归档实测结果：`make demo-stage-1` 通过（health 200、两个 CLI 返回 `mock response`、trace 200，
+`mock-primary` 首块前失败后由 `mock-fallback` 成功）；`make demo-stage-4` 通过（in-process doubles，未访问
+MySQL/Redis/Docker）；`make verify-real-storage` 保持 `verification_unavailable` / `quota_configuration_missing`、
+`network_attempts=0`、`provider_attempts=0`、exit 1 的受控拒绝。
+
+关键设计选择见公开决策：[Provider/Router 边界](decisions/001-provider-adapter-boundary.md)、[Reservation 非 TCC](decisions/002-reservation-settlement-boundary.md)、[暂缓 gRPC](decisions/003-grpc-deferred.md)、[estimated usage 不退款](decisions/004-estimated-usage-no-refund.md)。
+
+本轮验收之后有两项明确后置工作：以 `usage_outbox` 聚合并进行 Redis/Provider/MySQL 三方对账；由操作者提供专用非生产 MySQL/Redis 后重跑 `make verify-real-storage`。两项均未在本仓库写成已完成。
+
 ## 2. 问题边界
 
 ### 要解决
