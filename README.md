@@ -138,6 +138,21 @@ evidence 的 reconciler 裁决。演示使用确定性进程内替身，明确�
 2026-08-29 的受控本机拒绝运行设置了 reservation mode、有效内存 bootstrap tenant 与 mock Provider，但故意不设置任一
 存储变量；服务实际输出 `quota_configuration_missing`、exit 1，且在配置校验前没有 MySQL/Redis 或 Provider 尝试。
 
+## 1.7 真实 MySQL / Redis 受控验证（008）
+
+`make verify-real-storage` 是独立于网关的 opt-in 验证器。它只接受环境变量
+`AGENTMESH_REAL_STORAGE_VALIDATION=1`、`AGENTMESH_QUOTA_MYSQL_DSN`、`AGENTMESH_QUOTA_REDIS_URL` 与
+`AGENTMESH_REAL_VALIDATION_NAMESPACE`；没有命令行凭据，也不会调用 Provider。四项任一缺失时，它输出 JSON
+`verification_unavailable/quota_configuration_missing` 并以 exit 1 结束，网络、DDL、余额写入和 Provider attempt 都为 0。
+
+提供配置意味着操作者确认目标是可处置的非生产 schema 和 Redis namespace。验证器只从既有 migration 补建缺失表；已有表只做
+列、索引和约束形状核对，不执行 ALTER/DROP。每次运行产生独有 tenant/request/reservation 标识，实测 reserve→settle、
+reserve→cancel、started 与无 attempt 两类 reconciler 恢复及重放；随后仅删除本次已知行/key，保留 migration 表。stdout 是脱敏
+JSON 摘要，绝不含 DSN、URL、密码、prompt 或响应。若没有真实环境，受控拒绝是正确结果，不能改写成真实基础设施通过。
+2026-08-29 本机实际执行该命令时，四项环境变量均不存在，输出为 `verification_unavailable` /
+`quota_configuration_missing`、`network_attempts=0`、`provider_attempts=0`、exit 1；因此本仓库仍没有一次真实 MySQL/Redis
+endpoint 成功事实。
+
 ## 2. 问题边界
 
 ### 要解决

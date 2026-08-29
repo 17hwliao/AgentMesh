@@ -81,6 +81,17 @@ func TestSQLRepositorySameValueProgressUsesMatchedRowSemantics(t *testing.T) {
 	}
 }
 
+func TestSQLRepositoryClaimExpiredForTenantNeverUsesGlobalScan(t *testing.T) {
+	tx := &fakeTransaction{}
+	repo := newSQLRepository(fakeDatabase{tx: tx}, nil)
+	if _, err := repo.ClaimExpiredForTenant(context.Background(), "tenant-validation", time.Now(), 1); err != nil {
+		t.Fatal(err)
+	}
+	if len(tx.queryQueries) != 1 || !strings.Contains(tx.queryQueries[0], "r.tenant_id = ?") {
+		t.Fatalf("tenant-scoped reconciliation query=%q", tx.queryQueries)
+	}
+}
+
 func TestMySQLDSNForcesClientFoundRows(t *testing.T) {
 	normalized, err := mysqlDSNWithFoundRows("agentmesh:secret@tcp(127.0.0.1:3306)/agentmesh?parseTime=true")
 	if err != nil {
@@ -154,7 +165,8 @@ func (t *fakeTransaction) QueryRowContext(_ context.Context, query string, _ ...
 	return row
 }
 
-func (t *fakeTransaction) QueryContext(context.Context, string, ...any) (sqlRows, error) {
+func (t *fakeTransaction) QueryContext(_ context.Context, query string, _ ...any) (sqlRows, error) {
+	t.queryQueries = append(t.queryQueries, query)
 	return fakeRows{}, nil
 }
 

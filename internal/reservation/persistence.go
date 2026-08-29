@@ -331,6 +331,19 @@ type ReconcileCandidate struct {
 // ClaimExpired is the only normal path that enters expired_pending. Row locks
 // make concurrent reconciler scans claim a candidate at most once.
 func (r *SQLRepository) ClaimExpired(ctx context.Context, before time.Time, limit int) ([]ReconcileCandidate, error) {
+	return r.claimExpired(ctx, "", before, limit)
+}
+
+// ClaimExpiredForTenant is the validation-safe variant of ClaimExpired. It
+// never locks or transitions another tenant's stale reservation.
+func (r *SQLRepository) ClaimExpiredForTenant(ctx context.Context, tenantID string, before time.Time, limit int) ([]ReconcileCandidate, error) {
+	if tenantID == "" {
+		return nil, domainError(CodeStateInvalid)
+	}
+	return r.claimExpired(ctx, tenantID, before, limit)
+}
+
+func (r *SQLRepository) claimExpired(ctx context.Context, tenantID string, before time.Time, limit int) ([]ReconcileCandidate, error) {
 	if limit <= 0 {
 		return nil, domainError(CodeStateInvalid)
 	}
@@ -339,7 +352,11 @@ func (r *SQLRepository) ClaimExpired(ctx context.Context, before time.Time, limi
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, expiredCandidatesSQL, before.UTC(), limit)
+	query, arguments := expiredCandidatesSQL, []any{before.UTC(), limit}
+	if tenantID != "" {
+		query, arguments = expiredCandidatesForTenantSQL, []any{tenantID, before.UTC(), limit}
+	}
+	rows, err := tx.QueryContext(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -479,6 +496,13 @@ const expiredCandidatesSQL = `SELECT ` + reservationColumns + `,
     COALESCE((SELECT SUM(a.forwarded_runes) FROM provider_attempts AS a WHERE a.reservation_id = r.reservation_id), 0)
     FROM quota_reservations AS r
     WHERE r.state IN ('creating', 'reserved', 'expired_pending') AND r.heartbeat_at < ?
+    ORDER BY r.heartbeat_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
+
+const expiredCandidatesForTenantSQL = `SELECT ` + reservationColumns + `,
+    EXISTS (SELECT 1 FROM provider_attempts AS a WHERE a.reservation_id = r.reservation_id),
+    COALESCE((SELECT SUM(a.forwarded_runes) FROM provider_attempts AS a WHERE a.reservation_id = r.reservation_id), 0)
+    FROM quota_reservations AS r
+    WHERE r.tenant_id = ? AND r.state IN ('creating', 'reserved', 'expired_pending') AND r.heartbeat_at < ?
     ORDER BY r.heartbeat_at ASC LIMIT ? FOR UPDATE SKIP LOCKED`
 
 const markExpiredPendingSQL = `UPDATE quota_reservations
