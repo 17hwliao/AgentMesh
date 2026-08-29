@@ -10,6 +10,7 @@ import (
 	"agentmesh/internal/auth"
 	"agentmesh/internal/gateway"
 	"agentmesh/internal/observability"
+	"agentmesh/internal/reservation"
 	"agentmesh/internal/runtime"
 	"agentmesh/internal/tenant"
 )
@@ -52,9 +53,19 @@ func main() {
 	if err != nil {
 		log.Fatal("tenant_route_configuration_invalid")
 	}
-	server := gateway.NewWithTenantRoutingAndRecorder(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil))
+	reservationGate, cleanupReservation, err := reservation.OpenConfiguredCoordinator(os.Getenv)
+	if err != nil {
+		if code := reservation.Code(err); code != "" {
+			log.Fatal(code)
+		}
+		log.Fatal("quota_configuration_invalid")
+	}
+	defer cleanupReservation()
+	server := gateway.NewWithTenantRoutingAndRecorderAndReservations(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil), reservationGate)
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
-	log.Fatal(http.ListenAndServe(*address, server.AuthenticatedHandler(func(next http.Handler) http.Handler {
+	if err := http.ListenAndServe(*address, server.AuthenticatedHandler(func(next http.Handler) http.Handler {
 		return auth.Authenticate(store, next)
-	})))
+	})); err != nil {
+		log.Print(err)
+	}
 }

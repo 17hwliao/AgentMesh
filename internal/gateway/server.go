@@ -14,18 +14,20 @@ import (
 	"agentmesh/internal/auth"
 	"agentmesh/internal/observability"
 	"agentmesh/internal/provider"
+	"agentmesh/internal/reservation"
 	"agentmesh/internal/router"
 )
 
 const (
-	chatPath        = "/v1/chat/completions"
-	healthPath      = "/healthz"
-	maxRequestBytes = 64 << 10
-	modelNotAllowed = "model_not_allowed"
-	quotaExhausted  = "quota_exhausted"
-	tracePath       = "/v1/observability/traces/{trace_id}"
-	traceHeader     = "X-AgentMesh-Trace-ID"
-	traceNotFound   = "trace_not_found"
+	chatPath         = "/v1/chat/completions"
+	healthPath       = "/healthz"
+	maxRequestBytes  = 64 << 10
+	modelNotAllowed  = "model_not_allowed"
+	quotaExhausted   = "quota_exhausted"
+	tracePath        = "/v1/observability/traces/{trace_id}"
+	traceHeader      = "X-AgentMesh-Trace-ID"
+	traceNotFound    = "trace_not_found"
+	quotaUnavailable = "quota_unavailable"
 )
 
 // TenantResolver supplies only the already-authorized, already-constructed
@@ -57,6 +59,7 @@ type Server struct {
 	providers      []provider.Provider
 	tenantResolver TenantResolver
 	quota          QuotaGate
+	reservations   reservation.StreamGate
 	recorder       *observability.Recorder
 }
 
@@ -73,11 +76,17 @@ func NewWithTenantRouting(resolver TenantResolver, quota ...QuotaGate) *Server {
 }
 
 func NewWithTenantRoutingAndRecorder(resolver TenantResolver, recorder *observability.Recorder, quota ...QuotaGate) *Server {
+	return NewWithTenantRoutingAndRecorderAndReservations(resolver, recorder, nil, quota...)
+}
+
+// NewWithTenantRoutingAndRecorderAndReservations adds the opt-in durable
+// reservation gate without weakening the existing allow-only development mode.
+func NewWithTenantRoutingAndRecorderAndReservations(resolver TenantResolver, recorder *observability.Recorder, reservations reservation.StreamGate, quota ...QuotaGate) *Server {
 	gate := QuotaGate(allowQuotaGate{})
 	if len(quota) == 1 && quota[0] != nil {
 		gate = quota[0]
 	}
-	return &Server{tenantResolver: resolver, quota: gate, recorder: recorder}
+	return &Server{tenantResolver: resolver, quota: gate, reservations: reservations, recorder: recorder}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -199,6 +208,20 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		writeJSONError(w, http.StatusServiceUnavailable, "provider_unavailable")
 		return
 	}
+	var reservationSession reservation.StreamSession
+	if s.reservations != nil {
+		reservationSession, err = s.reservations.Begin(request.Context(), tenantID, input.Model, input.Messages)
+		if err != nil {
+			if reservation.Code(err) == quotaExhausted {
+				completeTrace(session, quotaExhausted, false)
+				writeJSONError(w, http.StatusTooManyRequests, quotaExhausted)
+				return
+			}
+			completeTrace(session, quotaUnavailable, false)
+			writeJSONError(w, http.StatusServiceUnavailable, quotaUnavailable)
+			return
+		}
+	}
 	started := false
 	start := func() {
 		if started {
@@ -209,13 +232,38 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 	}
-	err = streamer.Stream(request.Context(), provider.ChatRequest{Model: input.Model, Messages: input.Messages}, func(chunk provider.Chunk) error {
+	chat := provider.ChatRequest{Model: input.Model, Messages: input.Messages}
+	emit := func(chunk provider.Chunk) error {
 		start()
 		return writeSSE(w, map[string]any{
 			"choices": []map[string]any{{"delta": map[string]string{"content": chunk.Delta}}},
 			"usage":   chunk.Usage,
 		})
-	})
+	}
+	if reservationSession != nil {
+		hooked, ok := streamer.(router.HookedStreamer)
+		if !ok {
+			_ = reservationSession.Complete(request.Context(), quotaUnavailable, false)
+			completeTrace(session, quotaUnavailable, false)
+			writeJSONError(w, http.StatusServiceUnavailable, quotaUnavailable)
+			return
+		}
+		err = hooked.StreamWithAttemptHook(request.Context(), chat, emit, reservationSession)
+	} else {
+		err = streamer.Stream(request.Context(), chat, emit)
+	}
+	if reservationSession != nil {
+		if completeErr := reservationSession.Complete(request.Context(), streamErrorCode(err), errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)); completeErr != nil {
+			completeTrace(session, quotaUnavailable, false)
+			if started {
+				_ = writeSSE(w, map[string]any{"error": map[string]string{"code": quotaUnavailable}})
+				_ = writeDone(w)
+				return
+			}
+			writeJSONError(w, http.StatusServiceUnavailable, quotaUnavailable)
+			return
+		}
+	}
 	if err == nil {
 		completeTrace(session, "success", false)
 		if !started {
@@ -286,6 +334,9 @@ func decodeChatRequest(request *http.Request) (chatRequest, error) {
 }
 
 func streamErrorCode(err error) string {
+	if reservation.Code(err) == quotaExhausted {
+		return quotaExhausted
+	}
 	if errors.Is(err, router.ErrStreamInterrupted) {
 		return "stream_interrupted"
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	"agentmesh/internal/auth"
 	"agentmesh/internal/provider"
+	"agentmesh/internal/reservation"
 	"agentmesh/internal/tenant"
 )
 
@@ -67,9 +69,53 @@ func TestQuotaRejectionHasNoProviderAttempt(t *testing.T) {
 	}
 }
 
+func TestReservationGateRejectsBeforeProviderAttempt(t *testing.T) {
+	raw, store, mock := authenticatedStore(t)
+	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithTenantRoutingAndRecorderAndReservations(resolver, nil, rejectingReservationGate{}, nil)
+	request := chatRequestForTest()
+	request.Header.Set("Authorization", "Bearer "+raw)
+	recorder := httptest.NewRecorder()
+	server.AuthenticatedHandler(func(next http.Handler) http.Handler { return auth.Authenticate(store, next) }).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests || !strings.Contains(recorder.Body.String(), quotaExhausted) || mock.Calls() != 0 {
+		t.Fatalf("status=%d body=%s calls=%d", recorder.Code, recorder.Body.String(), mock.Calls())
+	}
+}
+
+func TestReservationStorageFailureHasNoProviderAttempt(t *testing.T) {
+	raw, store, mock := authenticatedStore(t)
+	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithTenantRoutingAndRecorderAndReservations(resolver, nil, unavailableReservationGate{}, nil)
+	request := chatRequestForTest()
+	request.Header.Set("Authorization", "Bearer "+raw)
+	recorder := httptest.NewRecorder()
+	server.AuthenticatedHandler(func(next http.Handler) http.Handler { return auth.Authenticate(store, next) }).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), quotaUnavailable) || mock.Calls() != 0 {
+		t.Fatalf("status=%d body=%s calls=%d", recorder.Code, recorder.Body.String(), mock.Calls())
+	}
+}
+
 type rejectQuota struct{}
 
 func (rejectQuota) Allow(context.Context, string, string) bool { return false }
+
+type rejectingReservationGate struct{}
+
+func (rejectingReservationGate) Begin(context.Context, string, string, []provider.Message) (reservation.StreamSession, error) {
+	return nil, &reservation.Error{Code: quotaExhausted}
+}
+
+type unavailableReservationGate struct{}
+
+func (unavailableReservationGate) Begin(context.Context, string, string, []provider.Message) (reservation.StreamSession, error) {
+	return nil, errors.New("storage unavailable")
+}
 
 func authenticatedStore(t *testing.T) (string, *tenant.MemoryStore, *provider.Mock) {
 	t.Helper()

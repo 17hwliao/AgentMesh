@@ -66,8 +66,8 @@ SHA-256 hash，内存记录绝不保存原始 key。还必须提供 `AGENTMESH_B
 Provider 名称及健康状态；`GET /healthz` 仍是唯一公开端点。
 
 tenant route 只是逻辑名称声明，实际 Adapter 始终由 002 的 `runtime.Build` 创建。启动前会拒绝 mock 与真实
-Provider 混排、乱序或越出全局 Provider 集合的 tenant route。`QuotaGate` 目前固定 allow；`quota_exhausted`
-仅保留接口和 HTTP 契约，尚未启用 Redis、扣减、账单或任何运行时配额判断。
+Provider 混排、乱序或越出全局 Provider 集合的 tenant route。默认 `QuotaGate` 仍为 allow-only 开发切片；006 的
+持久 Reservation 只有显式设置 `AGENTMESH_QUOTA_MODE=reservation` 后才启用。
 
 2026-08-28 的 T003 受控本机运行使用一次性的随机 key（未落盘），以 `mock-model → mock` 启动
 `127.0.0.1` 网关：两个 CLI 均实际输出 `mock response`；无 Bearer 请求返回 401 `auth_failed`；有效 key 请求
@@ -118,6 +118,25 @@ Redis Lua/MySQL/SQLite、reconciler、usage_outbox、对账或 `demo-stage-4`，
 2026-08-29 的受控测试实际通过：attempt 前取消与同操作重放、attempt 后 `reservation_must_settle`、版本/tenant
 冲突、`expired_pending` 禁止普通取消，以及 32 个并发相同 `StartAttempt` 最终只留下一个 attempt。它验证的是状态边界，
 不是对真实 Provider、余额或持久化系统的实验。
+
+## 1.6 持久 Reservation 与保守结算（006）
+
+006 增加 MySQL 8 migration `migrations/001_quota_reservations.sql`、`quota_reservations`/`provider_attempts` 持久证据、
+Redis Lua 的 reserve/settle/cancel operation key，以及 Gateway 的可选 Reservation Coordinator。启用模式仅接受环境变量：
+`AGENTMESH_QUOTA_MODE=reservation`、`AGENTMESH_QUOTA_MYSQL_DSN`、`AGENTMESH_QUOTA_REDIS_URL`、
+`AGENTMESH_BOOTSTRAP_TENANT_QUOTA_UNITS` 与 `AGENTMESH_RESERVATION_UNITS`；密钥、DSN 和 Redis URL 绝不写入 flags、日志或 Git。
+缺少配置会以 `quota_configuration_missing` 在启动前拒绝；运行中任一存储失败以 503 `quota_unavailable` 在 Provider 前拒绝。
+
+正常顺序固定为 MySQL `creating` → Redis Lua reserve → MySQL `reserved` → 同步写入 attempt started evidence → Adapter。
+流中每 16 个 SSE chunk 或 1 秒持久化一次已成功转发的 rune 下界和 heartbeat；写入失败停止后续转发。只有所有 attempt 都有
+Provider 明示且非 estimated 的 usage 时才按该 usage 退款；缺失或 estimated usage 一律 `settled(estimated)`、保留全部预扣。
+rune 计量是诊断和 reconciler 证据下界，**不是** tokenizer 或精确 Token 账单，也不构成退款依据。
+
+`make demo-stage-4` 会运行可重复的离线故障演示：预扣、首块前 fallback、两次 attempt、流中断后的保守结算，以及 started
+evidence 的 reconciler 裁决。演示使用确定性进程内替身，明确不接触 MySQL/Redis endpoint、Docker 或真实 Provider；它验证控制流，
+不能被写成真实基础设施实验。真实 MySQL/Redis 只有操作者显式提供上述环境后才会连接；本阶段未记录一次真实 endpoint 成功。
+2026-08-29 的受控本机拒绝运行设置了 reservation mode、有效内存 bootstrap tenant 与 mock Provider，但故意不设置任一
+存储变量；服务实际输出 `quota_configuration_missing`、exit 1，且在配置校验前没有 MySQL/Redis 或 Provider 尝试。
 
 ## 2. 问题边界
 
@@ -183,7 +202,7 @@ flowchart LR
 - Redis Lua 在单次脚本中检查与扣减 Token 预算，避免并发下超额；
 - 令牌桶限制单位时间请求数；
 - V0 只验证预扣与正常路径结算；V1 补齐 Reservation 状态机、崩溃恢复和异步账单，不能把 V0 当成生产级计费链路；
-- 对流式请求，预扣保守预算；Provider usage 可用时按其结算。不可用时，按模型对应 tokenizer 计算输入与已转发文本，标记为“本地可观测下界”，而非 Provider 精确账单；
+- 对流式请求，预扣保守预算；只有完整 Provider usage 可用时按其结算。不可用时保存已转发 rune 的“本地可观测下界”，标记 estimated，但不以此证明可退款或精确 Token 账单；
 - 用量账单通过 outbox 异步写 MySQL，热路径不做重型聚合。
 
 ### 4.5 Reservation 状态机（V1）
@@ -209,7 +228,7 @@ stateDiagram-v2
 - `provider_attempts` 的“已发起”标记必须在调用 Provider Adapter 前持久化；一旦 Adapter 调用已经开始，哪怕网络错误无法判断请求是否到达上游，也保守地按 `settled` 处理；
 - fallback attempt 的 input 与已转发 output 用量累加，路由器在下一次 attempt 前重新检查 Reservation 剩余额度；
 - `quota_reservations` 在发起 Provider 前持久化 `reservation_id`、`request_id`、状态、attempt 痕迹、已转发文本/本地 Token 计量、心跳和版本号；reconciler 据此幂等裁决；
-- Provider 未提供 usage 时，本地计量只反映网关确认已发送/转发的内容；Provider 可能已生成但网关未观察到的部分不向租户收费，并作为平台侧不确定成本记录。
+- Provider 未提供 usage 时，本地计量只反映网关确认已发送/转发的内容；其不足以证明剩余额度未被上游消耗，因此本阶段不退款，并把终态标为 `settled(estimated)`。
 
 ### 4.6 可观测性与版本化
 
@@ -225,7 +244,7 @@ stateDiagram-v2
 | Go / net-http / Context | API、SSE、取消传播 | 流式模型调用本身要求长连接与资源回收 |
 | Eino / Eino Ext | 模型适配、流和 Callback | 避免业务直接耦合具体 Provider |
 | Go-zero | 管理面 REST API、中间件 | 管理端是标准的配置与权限接口 |
-| MySQL + GORM | 租户、Key、Reservation、用量账单 | 强一致业务元数据与可恢复的配额状态 |
+| MySQL + `database/sql` | Reservation/attempt 持久证据 | 版本条件更新与可恢复的配额状态；未引入 ORM |
 | Redis + Lua | 限流、Token 预扣与结算 | 原子扣减和高频热路径 |
 | JWT + Casbin | 管理面鉴权与 RBAC | 多租户后台必须区分操作权限 |
 | Viper + Zap | 多环境配置、结构化日志 | Provider 配置和故障定位需要规范化 |

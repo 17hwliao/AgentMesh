@@ -101,6 +101,21 @@ func TestObserverPanicOrBlockDoesNotDelayStream(t *testing.T) {
 	close(blocking.release)
 }
 
+func TestAttemptHookRejectsBeforeProviderAndStopsAfterProgressFailure(t *testing.T) {
+	blocked := provider.NewMock(provider.MockConfig{Name: "blocked", Chunks: []string{"never"}, FailAfterChunks: -1})
+	before := &recordingHook{beforeErr: errors.New("quota exhausted")}
+	if err := New(blocked).StreamWithAttemptHook(context.Background(), request(), func(provider.Chunk) error { return nil }, before); err == nil || blocked.Calls() != 0 {
+		t.Fatalf("before error=%v calls=%d", err, blocked.Calls())
+	}
+
+	primary := provider.NewMock(provider.MockConfig{Name: "primary", Chunks: []string{"first"}, FailAfterChunks: -1})
+	fallback := provider.NewMock(provider.MockConfig{Name: "fallback", Chunks: []string{"must not run"}, FailAfterChunks: -1})
+	progress := &recordingHook{emitErr: errors.New("progress unavailable")}
+	if err := New(primary, fallback).StreamWithAttemptHook(context.Background(), request(), func(provider.Chunk) error { return nil }, progress); err == nil || fallback.Calls() != 0 || progress.finished != "progress_persist_failed" {
+		t.Fatalf("progress error=%v fallback=%d finished=%q", err, fallback.Calls(), progress.finished)
+	}
+}
+
 type collectingObserver struct{ events []AttemptEvent }
 
 func (o *collectingObserver) Observe(event AttemptEvent) { o.events = append(o.events, event) }
@@ -113,6 +128,22 @@ func (panicObserver) Observe(AttemptEvent) { panic("observer failure") }
 type blockingObserver struct {
 	entered chan struct{}
 	release chan struct{}
+}
+
+type recordingHook struct {
+	beforeErr error
+	emitErr   error
+	finished  string
+}
+
+func (h *recordingHook) BeforeAttempt(context.Context, string, provider.ChatRequest) error {
+	return h.beforeErr
+}
+func (h *recordingHook) BeforeEmit(context.Context, string, provider.Chunk) error { return h.emitErr }
+func (h *recordingHook) AfterEmit(context.Context, string, provider.Chunk) error  { return nil }
+func (h *recordingHook) FinishAttempt(_ context.Context, _ string, outcome string) error {
+	h.finished = outcome
+	return nil
 }
 
 func (o blockingObserver) Observe(AttemptEvent) {
