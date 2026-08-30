@@ -225,6 +225,25 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 撤销，不能查询或恢复原始值。013 的 migration、repository、管理 API 与离线 HTTP 测试已覆盖；本机尚未配置真实 MySQL，
 因此没有把替身结果写成真实持久化实证。
 
+## 1.11 真实 Provider 受控联调（014）
+
+`make verify-real-provider` 是 002 Ark/Ollama Adapter 的独立 opt-in 联调入口。它要求当前 shell 同时设置
+`ARK_BASE_URL`、`ARK_MODEL`、`ARK_API_KEY`、`OLLAMA_BASE_URL` 与 `OLLAMA_MODEL`；凭据只保留在该进程环境，
+不通过 flags、文件、日志、聊天或 Git 传递。预检失败时，脚本不启动网关、不创建 Provider 网络尝试，只输出脱敏 JSON 并
+非零退出：
+
+```json
+{"status":"verification_unavailable","code":"provider_configuration_missing","network_attempts":0,"provider_attempts":0}
+```
+
+配置完整时，脚本临时生成 Bootstrap/API Key，启动 `127.0.0.1` 网关并以 `ark,ollama` 路由发送一条固定 stream 请求。
+它最多保留既有的“Ark 首块前失败才尝试一次 Ollama fallback”行为；首块后不切换。try/finally 会停止子进程、删除临时产物并
+恢复被改写的环境变量。摘要只包含状态、稳定结果码、尝试数和 Provider 名称，绝不包含 endpoint、模型、Key、prompt、delta
+或上游原文。
+
+2026-08-30 本机实际执行该入口时五项环境变量均未提供，得到上述受控拒绝；没有 Ark/Ollama 网络请求或真实流成功事实。
+将来操作者配置好环境后，一次真实运行最多证明本次 endpoint 的连通与流式互操作，不能据此推断成本、性能、配额或生产可用性。
+
 ## 2. 问题边界
 
 ### 要解决
