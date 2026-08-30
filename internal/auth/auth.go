@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
 	"agentmesh/internal/tenant"
@@ -25,14 +24,12 @@ func (e *ConfigurationError) Error() string { return e.Code }
 
 type contextKey struct{}
 
-var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
-
 func Bootstrap(lookup func(string) string) (*tenant.MemoryStore, error) {
 	key, id, routesRaw := lookup("AGENTMESH_BOOTSTRAP_API_KEY"), lookup("AGENTMESH_BOOTSTRAP_TENANT_ID"), lookup("AGENTMESH_BOOTSTRAP_MODEL_ROUTES")
 	if key == "" || id == "" || routesRaw == "" {
 		return nil, &ConfigurationError{CodeConfigurationMissing}
 	}
-	if !tenantIDPattern.MatchString(id) || len(key) < 12 {
+	if len(key) < 12 {
 		return nil, &ConfigurationError{CodeConfigurationInvalid}
 	}
 	var routes map[string][]string
@@ -41,17 +38,8 @@ func Bootstrap(lookup func(string) string) (*tenant.MemoryStore, error) {
 	if dec.Decode(&routes) != nil || dec.Decode(&struct{}{}) != io.EOF || len(routes) == 0 {
 		return nil, &ConfigurationError{CodeConfigurationInvalid}
 	}
-	for model, route := range routes {
-		if strings.TrimSpace(model) == "" || len(route) == 0 {
-			return nil, &ConfigurationError{CodeConfigurationInvalid}
-		}
-		seen := map[string]bool{}
-		for _, name := range route {
-			if seen[name] || (name != "mock" && name != "ark" && name != "ollama") {
-				return nil, &ConfigurationError{CodeConfigurationInvalid}
-			}
-			seen[name] = true
-		}
+	if !tenant.ValidDefinition(tenant.Tenant{ID: id, Enabled: true, ModelRoutes: routes}) {
+		return nil, &ConfigurationError{CodeConfigurationInvalid}
 	}
 	digest := sha256.Sum256([]byte(key))
 	prefix := key[:8]

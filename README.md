@@ -179,7 +179,8 @@ MySQL/Redis/Docker）；`make verify-real-storage` 保持 `verification_unavaila
 
 关键设计选择见公开决策：[Provider/Router 边界](decisions/001-provider-adapter-boundary.md)、[Reservation 非 TCC](decisions/002-reservation-settlement-boundary.md)、[暂缓 gRPC](decisions/003-grpc-deferred.md)、[estimated usage 不退款](decisions/004-estimated-usage-no-refund.md)。
 
-本轮验收之后有两项明确后置工作：以 `usage_outbox` 聚合并进行 Redis/Provider/MySQL 三方对账；由操作者提供专用非生产 MySQL/Redis 后重跑 `make verify-real-storage`。两项均未在本仓库写成已完成。
+本轮验收后的 usage outbox 与逐项对账已由 011 完成；由操作者提供专用非生产 MySQL/Redis 后重跑
+`make verify-real-storage` 仍是未完成的真实环境实证，不能写成已完成。
 
 ## 1.9 Usage Ledger（011）
 
@@ -196,6 +197,33 @@ MySQL 终态更新所在的同一事务写入安全 outbox snapshot；显式 dra
 `reconciliation_complete`、`outbox_missing`、`usage_record_missing`、`redis_operation_missing` 或 `ledger_mismatch`。
 它不重建 Redis 全局余额、不退款、不补写、不自动修账。usage record 是已结算的安全摘要，不是 tokenizer、价格或精确账单；
 本机仍没有真实 MySQL/Redis endpoint 成功实证。
+
+## 1.10 持久租户与本地 API Key 生命周期（013）
+
+013 新增手动 MySQL 8 migration `migrations/003_tenant_api_keys.sql`：`tenants`、有序的
+`tenant_model_routes` 与 `api_keys`。Key 记录只含不可猜测 `key_id`、唯一 prefix、SHA-256 digest、状态与安全时间摘要；
+不保存原始 Key、admin token、DSN、prompt 或响应。操作者必须先备份 schema 并显式应用 migration；一旦存在身份数据，
+关闭持久模式并保留数据才是常规回退，不能以 drop table 回退。
+
+默认仍是 003 的 Bootstrap 内存模式，供离线 stage-1 demo 使用。持久模式只在同时设置
+`AGENTMESH_AUTH_STORE=mysql`、`AGENTMESH_AUTH_MYSQL_DSN` 与 `AGENTMESH_ADMIN_TOKEN` 时启用；缺任一项在连接和
+Provider attempt 前受控拒绝，不会回退到 bootstrap 覆盖已保存身份。每个业务请求直接读取 Key 状态，撤销后的下一请求即以
+401 `auth_failed` 拒绝。持久模式也保持 002 的 Provider 边界：tenant route 只能是当前运行时 Provider 选择的合法有序子集，
+不能混用 mock 与真实 Adapter。
+
+服务仍只允许 `127.0.0.1:PORT`。仅持久模式注册本地管理端点：
+
+```text
+POST   /admin/tenants
+POST   /admin/api-keys
+DELETE /admin/api-keys/{key_id}
+Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
+```
+
+管理 token 与 tenant API Key 完全分离，固定长度摘要比较在任何业务 body 解码前完成；失败统一为
+401 `admin_auth_failed`。`POST /admin/api-keys` 只在成功响应中一次性返回原始 Key 和 `key_id`，之后只能按 key ID
+撤销，不能查询或恢复原始值。013 的 migration、repository、管理 API 与离线 HTTP 测试已覆盖；本机尚未配置真实 MySQL，
+因此没有把替身结果写成真实持久化实证。
 
 ## 2. 问题边界
 
@@ -240,6 +268,8 @@ flowchart LR
 - 每个 Key 绑定 `tenant_id`、可用模型、速率上限和 Token 周期预算；
 - JWT 用于管理后台登录；Casbin 控制平台管理员、租户管理员和开发者的管理权限；
 - 业务调用只凭 API Key，不把 JWT 混入服务间接口。
+
+当前 013 只提供回环本地的环境 admin token，不实现 JWT、Casbin、远程管理面或多角色权限模型。
 
 ### 4.2 Provider 路由与降级
 
@@ -327,7 +357,7 @@ stateDiagram-v2
 
 - `POST /v1/chat/completions`：OpenAI 风格模型调用，支持 `stream=true`；
 - `POST /v1/agent/runs`：规划接口，V0 不实现；只有确需托管 Agent 生命周期时再引入；
-- `POST /admin/api-keys`：创建 Key；
+- `POST /admin/api-keys`：013 已实现为仅回环、admin token 鉴权的创建 Key；
 - `GET /admin/usage`：按租户和模型查询用量；
 - `GET /health/providers`：Provider 健康状态。
 

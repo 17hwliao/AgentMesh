@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 
+	"agentmesh/internal/admin"
 	"agentmesh/internal/auth"
 	"agentmesh/internal/gateway"
 	"agentmesh/internal/observability"
@@ -35,13 +36,15 @@ func main() {
 		}
 		log.Fatal("provider_selection_invalid")
 	}
-	store, err := auth.Bootstrap(os.Getenv)
+	configuredStore, err := auth.OpenConfiguredRuntime(os.Getenv)
 	if err != nil {
 		if code, ok := auth.IsConfigurationError(err); ok {
 			log.Fatal(code)
 		}
 		log.Fatal("auth_configuration_invalid")
 	}
+	defer configuredStore.Close()
+	store := configuredStore.Store
 	providers, err := runtime.Build(*providerOrder, os.Getenv)
 	if err != nil {
 		if code, ok := runtime.IsConfigurationError(err); ok {
@@ -63,9 +66,17 @@ func main() {
 	defer cleanupReservation()
 	server := gateway.NewWithTenantRoutingAndRecorderAndReservations(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil), reservationGate)
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
-	if err := http.ListenAndServe(*address, server.AuthenticatedHandler(func(next http.Handler) http.Handler {
+	protected := server.AuthenticatedHandler(func(next http.Handler) http.Handler {
 		return auth.Authenticate(store, next)
-	})); err != nil {
+	})
+	root := http.NewServeMux()
+	if configuredStore.Lifecycle != nil {
+		root.Handle("/admin/", admin.NewHandler(configuredStore.Lifecycle, configuredStore.AdminTokenHash, func(route []string) bool {
+			return tenant.RouteAllowed(route, logicalProviders)
+		}))
+	}
+	root.Handle("/", protected)
+	if err := http.ListenAndServe(*address, root); err != nil {
 		log.Print(err)
 	}
 }

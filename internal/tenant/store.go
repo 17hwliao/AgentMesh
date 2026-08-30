@@ -3,8 +3,12 @@ package tenant
 import (
 	"crypto/sha256"
 	"crypto/subtle"
+	"regexp"
+	"strings"
 	"sync"
 )
+
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type Tenant struct {
 	ID          string
@@ -20,6 +24,57 @@ type APIKeyRecord struct {
 type Store interface {
 	Authenticate(string, [sha256.Size]byte) (Tenant, bool)
 	Route(string, string) ([]string, bool)
+}
+
+// ValidDefinition accepts only the static portion of a tenant declaration.
+// Resolver still checks its routes against the process-local Provider selection.
+func ValidDefinition(value Tenant) bool {
+	if !tenantIDPattern.MatchString(value.ID) || len(value.ModelRoutes) == 0 {
+		return false
+	}
+	for model, route := range value.ModelRoutes {
+		if strings.TrimSpace(model) == "" || len(route) == 0 {
+			return false
+		}
+		seen := map[string]bool{}
+		for _, name := range route {
+			if seen[name] || (name != "mock" && name != "ark" && name != "ollama") {
+				return false
+			}
+			seen[name] = true
+		}
+	}
+	return true
+}
+
+// RouteAllowed enforces the same mock/real provider boundary as runtime.Build:
+// mock is exclusive, while real routes are ordered subsets of the configured
+// process-local provider order.
+func RouteAllowed(route, logical []string) bool {
+	if len(route) == 0 || len(logical) == 0 {
+		return false
+	}
+	if len(logical) == 1 && logical[0] == "mock" {
+		return len(route) == 1 && route[0] == "mock"
+	}
+	last := -1
+	for _, name := range route {
+		if name == "mock" {
+			return false
+		}
+		index := -1
+		for candidate, global := range logical {
+			if global == name {
+				index = candidate
+				break
+			}
+		}
+		if index < 0 || index <= last {
+			return false
+		}
+		last = index
+	}
+	return true
 }
 
 type MemoryStore struct {

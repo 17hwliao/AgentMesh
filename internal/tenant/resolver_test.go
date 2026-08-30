@@ -26,6 +26,20 @@ func TestResolverRejectsMixedAndOutOfOrderDeclarationsAtStartup(t *testing.T) {
 	}
 }
 
+func TestResolverRejectsEmptyPersistedRouteSetAtStartup(t *testing.T) {
+	store := NewMemory([]Tenant{{ID: "tenant_a", Enabled: true}}, nil)
+	providers := []provider.Provider{provider.NewMock(provider.MockConfig{Name: "mock-primary", FailAfterChunks: -1})}
+	if _, err := NewResolver(store, []string{"mock"}, providers); err == nil || err.Error() != "tenant_route_configuration_invalid" {
+		t.Fatalf("NewResolver() error=%v", err)
+	}
+}
+
+func TestRouteAllowedKeepsMockAndRealModesSeparate(t *testing.T) {
+	if !RouteAllowed([]string{"ark", "ollama"}, []string{"ark", "ollama"}) || RouteAllowed([]string{"ollama", "ark"}, []string{"ark", "ollama"}) || RouteAllowed([]string{"mock"}, []string{"ark"}) {
+		t.Fatal("provider route boundary changed")
+	}
+}
+
 func TestResolverUsesOnlyAuthorizedMockRoute(t *testing.T) {
 	store := NewMemory([]Tenant{{ID: "tenant_a", Enabled: true, ModelRoutes: map[string][]string{"allowed": {"mock"}}}}, nil)
 	primary := provider.NewMock(provider.MockConfig{Name: "mock-primary", FailAfterChunks: -1})

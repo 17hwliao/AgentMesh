@@ -114,27 +114,7 @@ func (r *Resolver) allowedNames(tenantID string) []string {
 }
 
 func (r *Resolver) validRoute(route []string) bool {
-	if len(route) == 0 {
-		return false
-	}
-	if r.mockMode {
-		return len(route) == 1 && route[0] == "mock"
-	}
-	last := -1
-	for _, name := range route {
-		index := -1
-		for i, global := range r.logical {
-			if global == name {
-				index = i
-				break
-			}
-		}
-		if index < 0 || index <= last {
-			return false
-		}
-		last = index
-	}
-	return true
+	return RouteAllowed(route, r.logical)
 }
 
 // Routes lets Resolver obtain a tenant-local view for health without exposing
@@ -158,7 +138,11 @@ func (r *Resolver) validateDeclaredRoutes() error {
 	if !ok {
 		return errors.New("tenant_route_configuration_invalid")
 	}
-	for _, route := range all.AllRoutes() {
+	routes := all.AllRoutes()
+	if len(routes) == 0 {
+		return errors.New("tenant_route_configuration_invalid")
+	}
+	for _, route := range routes {
 		if !r.validRoute(route) {
 			return errors.New("tenant_route_configuration_invalid")
 		}
