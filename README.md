@@ -244,6 +244,19 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 2026-08-30 本机实际执行该入口时五项环境变量均未提供，得到上述受控拒绝；没有 Ark/Ollama 网络请求或真实流成功事实。
 将来操作者配置好环境后，一次真实运行最多证明本次 endpoint 的连通与流式互操作，不能据此推断成本、性能、配额或生产可用性。
 
+## 1.12 每租户内存令牌桶限流（012）
+
+012 为已认证的 `POST /v1/chat/completions` 增加可选的每租户、每进程请求限流。仅当当前 shell 同时设置
+`AGENTMESH_RATE_LIMIT_PER_MINUTE` 与 `AGENTMESH_RATE_LIMIT_BURST`（均为正整数）才启用；两者都缺失时保持原行为，
+只设置其一或任何非法值会在构造 Provider 前以 `rate_limit_configuration_invalid` 退出。它不读取 Key、DSN 或其他凭据。
+
+门禁在 API Key 鉴权之后、JSON body 解码和任何 model 路由、Reservation 或 Provider attempt 之前运行。超限响应为
+429 `rate_limited`，并以 `Retry-After` 给出向上取整的下一枚令牌可用秒数；`quota_exhausted` 仍只表示既有 Token
+配额/Reservation 拒绝。认证失败不建桶也不消耗令牌；health、trace 和管理面不受该本地门禁影响。
+
+桶初始装满，每个已认证聊天请求消耗一枚令牌，并按每分钟配置连续补充。该实现只保存在当前进程内存，重启即清空，多个
+API 进程不会共享状态；它不是 Redis、分布式限流、持久化租户策略或精确 Token 计费的承诺。
+
 ## 2. 问题边界
 
 ### 要解决
@@ -267,7 +280,8 @@ flowchart LR
     C1["SQL Sentinel"] --> API["AgentMesh HTTP API"]
     C2["Document Summary CLI"] --> API
     API --> AUTH["API Key / Tenant"]
-    AUTH --> QUOTA["Redis Lua 配额与限流"]
+    AUTH --> RATE["每进程每租户令牌桶"]
+    RATE --> QUOTA["Redis Lua Token 配额"]
     QUOTA --> ROUTER["Provider Router"]
     ROUTER --> ARK["Ark / 豆包"]
     ROUTER --> OLLAMA["Ollama"]
@@ -308,7 +322,7 @@ flowchart LR
 ### 4.4 配额与限流
 
 - Redis Lua 在单次脚本中检查与扣减 Token 预算，避免并发下超额；
-- 令牌桶限制单位时间请求数；
+- 当前令牌桶按 tenant 限制单位时间请求数，但只在单个 API 进程内存中生效；跨进程协调仍须 Redis 或其他共享存储；
 - V0 只验证预扣与正常路径结算；V1 补齐 Reservation 状态机、崩溃恢复和异步账单，不能把 V0 当成生产级计费链路；
 - 对流式请求，预扣保守预算；只有完整 Provider usage 可用时按其结算。不可用时保存已转发 rune 的“本地可观测下界”，标记 estimated，但不以此证明可退款或精确 Token 账单；
 - 用量账单通过 outbox 异步写 MySQL，热路径不做重型聚合。

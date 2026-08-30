@@ -11,6 +11,7 @@ import (
 	"agentmesh/internal/auth"
 	"agentmesh/internal/gateway"
 	"agentmesh/internal/observability"
+	"agentmesh/internal/ratelimit"
 	"agentmesh/internal/reservation"
 	"agentmesh/internal/runtime"
 	"agentmesh/internal/tenant"
@@ -27,6 +28,13 @@ func main() {
 	_ = flags.Parse(os.Args[1:])
 	if err := gateway.ValidateListenAddress(*address); err != nil {
 		log.Fatal(err)
+	}
+	rateGate, err := ratelimit.OpenConfigured(os.Getenv)
+	if err != nil {
+		if code, ok := ratelimit.IsConfigurationError(err); ok {
+			log.Fatal(code)
+		}
+		log.Fatal("rate_limit_configuration_invalid")
 	}
 
 	logicalProviders, err := runtime.Selection(*providerOrder)
@@ -65,6 +73,7 @@ func main() {
 	}
 	defer cleanupReservation()
 	server := gateway.NewWithTenantRoutingAndRecorderAndReservations(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil), reservationGate)
+	server.SetRateGate(rateGate)
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
 	protected := server.AuthenticatedHandler(func(next http.Handler) http.Handler {
 		return auth.Authenticate(store, next)

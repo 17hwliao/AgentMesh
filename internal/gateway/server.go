@@ -7,13 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"agentmesh/internal/auth"
 	"agentmesh/internal/observability"
 	"agentmesh/internal/provider"
+	"agentmesh/internal/ratelimit"
 	"agentmesh/internal/reservation"
 	"agentmesh/internal/router"
 )
@@ -24,6 +27,7 @@ const (
 	maxRequestBytes  = 64 << 10
 	modelNotAllowed  = "model_not_allowed"
 	quotaExhausted   = "quota_exhausted"
+	rateLimited      = "rate_limited"
 	tracePath        = "/v1/observability/traces/{trace_id}"
 	traceHeader      = "X-AgentMesh-Trace-ID"
 	traceNotFound    = "trace_not_found"
@@ -59,6 +63,7 @@ type Server struct {
 	providers      []provider.Provider
 	tenantResolver TenantResolver
 	quota          QuotaGate
+	rateLimit      ratelimit.Gate
 	reservations   reservation.StreamGate
 	recorder       *observability.Recorder
 }
@@ -89,6 +94,12 @@ func NewWithTenantRoutingAndRecorderAndReservations(resolver TenantResolver, rec
 	return &Server{tenantResolver: resolver, quota: gate, reservations: reservations, recorder: recorder}
 }
 
+// SetRateGate installs a process-local admission gate before the server begins
+// serving requests. A nil gate leaves the existing default behaviour intact.
+func (s *Server) SetRateGate(gate ratelimit.Gate) {
+	s.rateLimit = gate
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
@@ -103,9 +114,36 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
-	mux.Handle(chatPath, authenticate(http.HandlerFunc(s.handleChat)))
+	mux.Handle(chatPath, authenticate(s.withRateLimit(http.HandlerFunc(s.handleChat))))
 	mux.Handle(tracePath, authenticate(http.HandlerFunc(s.handleTrace)))
 	return mux
+}
+
+// withRateLimit executes only after authentication has populated the tenant
+// context and before the chat handler can decode a request body.
+func (s *Server) withRateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || s.rateLimit == nil {
+			next.ServeHTTP(w, request)
+			return
+		}
+		tenantID, ok := auth.TenantID(request.Context())
+		if !ok {
+			writeJSONError(w, http.StatusUnauthorized, auth.CodeFailed)
+			return
+		}
+		decision := s.rateLimit.Admit(tenantID)
+		if decision.Allowed {
+			next.ServeHTTP(w, request)
+			return
+		}
+		seconds := int64(math.Ceil(decision.RetryAfter.Seconds()))
+		if seconds < 1 {
+			seconds = 1
+		}
+		w.Header().Set("Retry-After", strconv.FormatInt(seconds, 10))
+		writeJSONError(w, http.StatusTooManyRequests, rateLimited)
+	})
 }
 
 func (s *Server) handleProviderHealth(w http.ResponseWriter, request *http.Request) {
