@@ -100,6 +100,7 @@ func (h *Handler) createAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// raw is deliberately scoped to this single success response.
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusCreated, map[string]string{"key_id": key.ID, "api_key": raw})
 }
 

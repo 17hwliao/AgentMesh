@@ -19,6 +19,26 @@ import (
 	"agentmesh/internal/tenant"
 )
 
+const (
+	serverReadHeaderTimeout = 5 * time.Second
+	serverReadTimeout       = 15 * time.Second
+	serverIdleTimeout       = 60 * time.Second
+)
+
+func newHTTPServer(address string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              address,
+		Handler:           handler,
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		ReadTimeout:       serverReadTimeout,
+		IdleTimeout:       serverIdleTimeout,
+		// WriteTimeout stays zero so legitimate SSE streams are not cut off by
+		// a fixed wall-clock timeout. Provider deadlines and client cancellation
+		// remain the stream termination boundaries.
+		WriteTimeout: 0,
+	}
+}
+
 func main() {
 	flags := flag.NewFlagSet("api", flag.ExitOnError)
 	address := flags.String("addr", "127.0.0.1:18080", "local listen address (must be 127.0.0.1:PORT)")
@@ -89,7 +109,7 @@ func main() {
 		}))
 	}
 	root.Handle("/", protected)
-	if err := http.ListenAndServe(*address, root); err != nil {
+	if err := newHTTPServer(*address, root).ListenAndServe(); err != nil {
 		log.Print(err)
 	}
 }

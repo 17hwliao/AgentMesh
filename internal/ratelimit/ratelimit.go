@@ -13,6 +13,8 @@ const (
 	EnvironmentPerMinute = "AGENTMESH_RATE_LIMIT_PER_MINUTE"
 	EnvironmentBurst     = "AGENTMESH_RATE_LIMIT_BURST"
 	CodeConfiguration    = "rate_limit_configuration_invalid"
+	defaultIdleTTL       = 15 * time.Minute
+	defaultMaxBuckets    = 10_000
 )
 
 // ConfigurationError contains a stable startup rejection code only.
@@ -22,8 +24,10 @@ func (e *ConfigurationError) Error() string { return e.Code }
 
 // Config applies equally to each tenant bucket in the current process.
 type Config struct {
-	PerMinute int
-	Burst     int
+	PerMinute  int
+	Burst      int
+	IdleTTL    time.Duration
+	MaxBuckets int
 }
 
 // Decision reports whether one request token was admitted. RetryAfter is set
@@ -39,8 +43,9 @@ type Gate interface {
 }
 
 type bucket struct {
-	tokens  float64
-	updated time.Time
+	tokens   float64
+	updated  time.Time
+	lastSeen time.Time
 }
 
 // TokenBucket is safe for concurrent requests. It deliberately owns no
@@ -75,6 +80,15 @@ func New(config Config, now func() time.Time) (*TokenBucket, error) {
 	if config.PerMinute <= 0 || config.Burst <= 0 {
 		return nil, &ConfigurationError{Code: CodeConfiguration}
 	}
+	if config.IdleTTL == 0 {
+		config.IdleTTL = defaultIdleTTL
+	}
+	if config.MaxBuckets == 0 {
+		config.MaxBuckets = defaultMaxBuckets
+	}
+	if config.IdleTTL <= 0 || config.MaxBuckets <= 0 {
+		return nil, &ConfigurationError{Code: CodeConfiguration}
+	}
 	if now == nil {
 		now = time.Now
 	}
@@ -90,9 +104,13 @@ func (g *TokenBucket) Admit(tenantID string) Decision {
 	defer g.mu.Unlock()
 
 	now := g.now()
+	g.evictIdle(now)
 	current, found := g.buckets[tenantID]
 	if !found {
-		current = bucket{tokens: float64(g.config.Burst), updated: now}
+		if len(g.buckets) >= g.config.MaxBuckets {
+			return Decision{RetryAfter: time.Second}
+		}
+		current = bucket{tokens: float64(g.config.Burst), updated: now, lastSeen: now}
 	}
 	if elapsed := now.Sub(current.updated); elapsed > 0 {
 		current.tokens += elapsed.Seconds() * float64(g.config.PerMinute) / 60
@@ -101,6 +119,7 @@ func (g *TokenBucket) Admit(tenantID string) Decision {
 		}
 		current.updated = now
 	}
+	current.lastSeen = now
 	if current.tokens >= 1 {
 		current.tokens--
 		g.buckets[tenantID] = current
@@ -109,6 +128,14 @@ func (g *TokenBucket) Admit(tenantID string) Decision {
 	remaining := (1 - current.tokens) * 60 / float64(g.config.PerMinute)
 	g.buckets[tenantID] = current
 	return Decision{RetryAfter: time.Duration(remaining * float64(time.Second))}
+}
+
+func (g *TokenBucket) evictIdle(now time.Time) {
+	for tenantID, current := range g.buckets {
+		if !now.Before(current.lastSeen) && now.Sub(current.lastSeen) >= g.config.IdleTTL {
+			delete(g.buckets, tenantID)
+		}
+	}
 }
 
 func positiveInteger(value string) (int, bool) {

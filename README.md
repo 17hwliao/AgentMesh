@@ -221,7 +221,7 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 ```
 
 管理 token 与 tenant API Key 完全分离，固定长度摘要比较在任何业务 body 解码前完成；失败统一为
-401 `admin_auth_failed`。`POST /admin/api-keys` 只在成功响应中一次性返回原始 Key 和 `key_id`，之后只能按 key ID
+401 `admin_auth_failed`。`POST /admin/api-keys` 只在成功响应中一次性返回原始 Key 和 `key_id`，并附带 `Cache-Control: no-store`；之后只能按 key ID
 撤销，不能查询或恢复原始值。013 的 migration、repository、管理 API 与离线 HTTP 测试已覆盖；本机尚未配置真实 MySQL，
 因此没有把替身结果写成真实持久化实证。
 
@@ -260,8 +260,14 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 429 `rate_limited`，并以 `Retry-After` 给出向上取整的下一枚令牌可用秒数；`quota_exhausted` 仍只表示既有 Token
 配额/Reservation 拒绝。认证失败不建桶也不消耗令牌；health、trace 和管理面不受该本地门禁影响。
 
-桶初始装满，每个已认证聊天请求消耗一枚令牌，并按每分钟配置连续补充。该实现只保存在当前进程内存，重启即清空，多个
-API 进程不会共享状态；它不是 Redis、分布式限流、持久化租户策略或精确 Token 计费的承诺。
+桶初始装满，每个已认证聊天请求消耗一枚令牌，并按每分钟配置连续补充。每次准入会回收连续 15 分钟未访问的 bucket，
+单进程最多保留 10,000 个 bucket；满载且没有可安全回收的闲置 bucket 时，新 tenant 以既有 `rate_limited` 429 被拒绝，
+不会删除活跃 tenant 或无限增长。该实现只保存在当前进程内存，重启即清空，多个 API 进程不会共享状态；它不是 Redis、
+分布式限流、持久化租户策略或精确 Token 计费的承诺。
+
+`cmd/api` 使用 5 秒 `ReadHeaderTimeout`、15 秒 `ReadTimeout` 与 60 秒 `IdleTimeout` 限制慢头、慢请求和空闲连接。
+为了不以固定墙钟截断合法 SSE，`WriteTimeout` 明确保持 0；流式资源回收仍依赖客户端断连取消与 Provider 自身超时，
+这不是无限长连接或生产级慢客户端保护的承诺。
 
 ## 1.13 HTTP 契约入口（015）
 

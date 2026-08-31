@@ -31,8 +31,8 @@ func TestAdminCreatesKeyWithSingleRawKeyResponse(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer admin-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated || response.Body.String() != "{\"api_key\":\""+raw+"\",\"key_id\":\"key-id\"}\n" || lifecycle.calls != 1 {
-		t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), lifecycle.calls)
+	if response.Code != http.StatusCreated || response.Body.String() != "{\"api_key\":\""+raw+"\",\"key_id\":\"key-id\"}\n" || lifecycle.calls != 1 || response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("status=%d body=%q calls=%d cache-control=%q", response.Code, response.Body.String(), lifecycle.calls, response.Header().Get("Cache-Control"))
 	}
 }
 

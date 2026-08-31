@@ -74,6 +74,48 @@ func TestTokenBucketDoesNotMintTokensWhenClockMovesBackward(t *testing.T) {
 	}
 }
 
+func TestTokenBucketEvictsIdleBucketBeforeAdmittingNewTenant(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	gate, err := New(Config{PerMinute: 1, Burst: 1, IdleTTL: time.Minute, MaxBuckets: 2}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Admit("tenant-idle").Allowed {
+		t.Fatal("initial tenant was denied")
+	}
+	now = now.Add(time.Minute)
+	if !gate.Admit("tenant-new").Allowed {
+		t.Fatal("new tenant was denied after idle eviction")
+	}
+	if len(gate.buckets) != 1 || gate.buckets["tenant-new"].lastSeen != now {
+		t.Fatalf("buckets=%+v", gate.buckets)
+	}
+}
+
+func TestTokenBucketPreservesActiveBucketsAndFailsClosedAtCapacity(t *testing.T) {
+	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
+	gate, err := New(Config{PerMinute: 1, Burst: 1, IdleTTL: time.Minute, MaxBuckets: 2}, func() time.Time { return now })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gate.Admit("tenant-a").Allowed {
+		t.Fatal("tenant-a was denied")
+	}
+	now = now.Add(30 * time.Second)
+	if !gate.Admit("tenant-b").Allowed {
+		t.Fatal("tenant-b was denied")
+	}
+	now = now.Add(20 * time.Second)
+	_ = gate.Admit("tenant-a") // refreshes tenant-a without making a token available.
+	denied := gate.Admit("tenant-c")
+	if denied.Allowed || denied.RetryAfter != time.Second || len(gate.buckets) != 2 {
+		t.Fatalf("decision=%+v buckets=%+v", denied, gate.buckets)
+	}
+	if _, ok := gate.buckets["tenant-c"]; ok {
+		t.Fatal("capacity rejection created a new bucket")
+	}
+}
+
 func TestTokenBucketIsConcurrent(t *testing.T) {
 	now := time.Date(2026, 8, 30, 10, 0, 0, 0, time.UTC)
 	gate, err := New(Config{PerMinute: 1, Burst: 20}, func() time.Time { return now })
