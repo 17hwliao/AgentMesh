@@ -264,6 +264,15 @@ API 进程不会共享状态；它不是 Redis、分布式限流、持久化租�
 `X-AgentMesh-Trace-ID`、trace 404 收敛和管理面边界。该文档描述的是 `6753800` 的实现，不把本地替身、受控拒绝或
 未配置的真实环境写成成功实证。
 
+## 1.14 本地管理 API 演示（018）
+
+`make demo-admin` 在单一短生命周期的回环 HTTP 进程中演示管理链路：创建 tenant/Key（201）→ chat 200 → 撤销（204）
+→ 原 Key chat 401 `auth_failed` → 重建 Key 后 chat 200。输出仅含步骤、HTTP 状态、稳定错误码和 mock Provider 名称；原始 Key
+只在进程内的 admin 创建响应与后续请求之间传递，不打印、落盘或进入日志。
+
+该命令使用演示专用内存 lifecycle，进程退出即丢失所有状态。它不启动 `cmd/api` 的持久 auth mode，不连接 MySQL、Redis、
+Ark、Ollama 或 Docker，也不证明 013 的 migration、持久 Store 或真实 Key 生命周期已成功运行。
+
 ## 2. 问题边界
 
 ### 要解决
