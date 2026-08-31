@@ -71,7 +71,7 @@ func TestQuotaRejectionHasNoProviderAttempt(t *testing.T) {
 
 func TestReservationGateRejectsBeforeProviderAttempt(t *testing.T) {
 	raw, store, mock := authenticatedStore(t)
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestReservationGateRejectsBeforeProviderAttempt(t *testing.T) {
 
 func TestReservationStorageFailureHasNoProviderAttempt(t *testing.T) {
 	raw, store, mock := authenticatedStore(t)
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func authenticatedStore(t *testing.T) (string, *tenant.MemoryStore, *provider.Mo
 
 func newAuthenticatedServer(t *testing.T, store *tenant.MemoryStore, mock provider.Provider, quota QuotaGate) http.Handler {
 	t.Helper()
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}

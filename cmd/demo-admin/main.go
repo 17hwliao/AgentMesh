@@ -3,6 +3,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -31,7 +32,7 @@ func main() {
 func run(output io.Writer) error {
 	store := admindemo.NewStore()
 	mock := provider.NewMock(provider.MockConfig{Name: "demo-admin-mock", Chunks: []string{"admin demo response"}, FailAfterChunks: -1})
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		return err
 	}

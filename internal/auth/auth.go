@@ -58,7 +58,7 @@ func Authenticate(store tenant.Store, next http.Handler) http.Handler {
 			reject(w)
 			return
 		}
-		t, ok := store.Authenticate(key[:8], sha256.Sum256([]byte(key)))
+		t, ok := store.Authenticate(r.Context(), key[:8], sha256.Sum256([]byte(key)))
 		if !ok {
 			reject(w)
 			return

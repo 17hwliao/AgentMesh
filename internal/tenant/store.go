@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"regexp"
@@ -22,8 +23,23 @@ type APIKeyRecord struct {
 	Enabled  bool
 }
 type Store interface {
-	Authenticate(string, [sha256.Size]byte) (Tenant, bool)
-	Route(string, string) ([]string, bool)
+	Authenticate(context.Context, string, [sha256.Size]byte) (Tenant, bool)
+	Route(context.Context, string, string) ([]string, bool)
+}
+
+// StartupState distinguishes a pristine persistent identity store from one
+// that has declared routes. Errors and partial records are never pristine.
+type StartupState struct {
+	Pristine bool
+	Routes   [][]string
+}
+
+type startupReader interface {
+	LoadStartupState(context.Context) (StartupState, error)
+}
+
+type routeReader interface {
+	Routes(context.Context, string) [][]string
 }
 
 // ValidDefinition accepts only the static portion of a tenant declaration.
@@ -94,7 +110,10 @@ func NewMemory(tenants []Tenant, keys []APIKeyRecord) *MemoryStore {
 	}
 	return s
 }
-func (s *MemoryStore) Authenticate(prefix string, digest [sha256.Size]byte) (Tenant, bool) {
+func (s *MemoryStore) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (Tenant, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return Tenant{}, false
+	}
 	s.mu.RLock()
 	record, exists := s.keys[prefix]
 	t := s.tenants[record.TenantID]
@@ -109,7 +128,10 @@ func (s *MemoryStore) Authenticate(prefix string, digest [sha256.Size]byte) (Ten
 	}
 	return cloneTenant(t), true
 }
-func (s *MemoryStore) Route(tenantID, model string) ([]string, bool) {
+func (s *MemoryStore) Route(ctx context.Context, tenantID, model string) ([]string, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	t, ok := s.tenants[tenantID]
@@ -121,6 +143,16 @@ func (s *MemoryStore) Route(tenantID, model string) ([]string, bool) {
 		return nil, false
 	}
 	return append([]string(nil), route...), true
+}
+
+func (s *MemoryStore) LoadStartupState(ctx context.Context) (StartupState, error) {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return StartupState{}, context.Canceled
+		}
+		return StartupState{}, ctx.Err()
+	}
+	return StartupState{Routes: s.allRoutes()}, nil
 }
 func cloneTenant(t Tenant) Tenant {
 	routes := map[string][]string{}

@@ -54,7 +54,7 @@ func TestRateLimitSeparatesTenantBuckets(t *testing.T) {
 		{ID: "tenant-b", Enabled: true, ModelRoutes: map[string][]string{"mock-model": {"mock"}}},
 	}, []tenant.APIKeyRecord{record(rawA, "tenant-a"), record(rawB, "tenant-b")})
 	mock := provider.NewMock(provider.MockConfig{Name: "mock", Chunks: []string{"ok"}, FailAfterChunks: -1})
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,11 +113,11 @@ type countingResolver struct {
 	calls    int
 }
 
-func (r *countingResolver) Streamer(string, string) (router.Streamer, bool) {
+func (r *countingResolver) Streamer(context.Context, string, string) (router.Streamer, bool) {
 	r.calls++
 	return r.streamer, true
 }
-func (r *countingResolver) VisibleProviders(string) []provider.Provider { return nil }
+func (r *countingResolver) VisibleProviders(context.Context, string) []provider.Provider { return nil }
 
 type countingQuota struct{ calls int }
 

@@ -18,7 +18,7 @@ func TestPersistentModeRevocationRejectsNextRequestBeforeProvider(t *testing.T) 
 	raw := "12345678-persisted-key-material"
 	store := &revocableStore{raw: raw, enabled: true}
 	mock := provider.NewMock(provider.MockConfig{Name: "mock-primary", Chunks: []string{"ok"}, FailAfterChunks: -1})
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,10 @@ type revocableStore struct {
 	enabled bool
 }
 
-func (s *revocableStore) Authenticate(prefix string, digest [sha256.Size]byte) (tenant.Tenant, bool) {
+func (s *revocableStore) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (tenant.Tenant, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return tenant.Tenant{}, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if prefix != s.raw[:8] || digest != sha256.Sum256([]byte(s.raw)) || !s.enabled {
@@ -67,14 +70,24 @@ func (s *revocableStore) Authenticate(prefix string, digest [sha256.Size]byte) (
 	}
 	return tenant.Tenant{ID: "tenant-a", Enabled: true}, true
 }
-func (*revocableStore) Route(tenantID, model string) ([]string, bool) {
+func (*revocableStore) Route(ctx context.Context, tenantID, model string) ([]string, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, false
+	}
 	if tenantID != "tenant-a" || model != "mock-model" {
 		return nil, false
 	}
 	return []string{"mock"}, true
 }
-func (*revocableStore) Routes(string) [][]string { return [][]string{{"mock"}} }
-func (*revocableStore) AllRoutes() [][]string    { return [][]string{{"mock"}} }
+func (*revocableStore) Routes(ctx context.Context, _ string) [][]string {
+	if ctx == nil || ctx.Err() != nil {
+		return nil
+	}
+	return [][]string{{"mock"}}
+}
+func (*revocableStore) LoadStartupState(context.Context) (tenant.StartupState, error) {
+	return tenant.StartupState{Routes: [][]string{{"mock"}}}, nil
+}
 
 type revokingLifecycle struct{ store *revocableStore }
 

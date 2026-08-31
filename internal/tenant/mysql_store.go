@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
+	"errors"
 	"sort"
 )
 
@@ -24,6 +25,11 @@ WHERE r.tenant_id = ? AND t.enabled = TRUE ORDER BY r.model, r.ordinal`
 const allRoutesMySQL = `SELECT r.tenant_id, r.model, r.provider FROM tenant_model_routes r
 JOIN tenants t ON t.tenant_id = r.tenant_id
 WHERE t.enabled = TRUE ORDER BY r.tenant_id, r.model, r.ordinal`
+
+const identityCountsMySQL = `SELECT
+  (SELECT COUNT(*) FROM tenants),
+  (SELECT COUNT(*) FROM tenant_model_routes),
+  (SELECT COUNT(*) FROM api_keys)`
 
 type mysqlRow interface{ Scan(...any) error }
 type mysqlRows interface {
@@ -55,14 +61,14 @@ type MySQLStore struct {
 
 func NewMySQLStore(db mysqlReadDatabase) *MySQLStore { return &MySQLStore{db: db} }
 
-func (s *MySQLStore) Authenticate(prefix string, digest [sha256.Size]byte) (Tenant, bool) {
-	if s == nil || s.db == nil {
+func (s *MySQLStore) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (Tenant, bool) {
+	if ctx == nil || ctx.Err() != nil || s == nil || s.db == nil {
 		return Tenant{}, false
 	}
 	var hash []byte
 	var keyEnabled, tenantEnabled bool
 	var tenantID string
-	err := s.db.QueryRowContext(context.Background(), authenticateMySQL, prefix).Scan(&hash, &keyEnabled, &tenantID, &tenantEnabled)
+	err := s.db.QueryRowContext(ctx, authenticateMySQL, prefix).Scan(&hash, &keyEnabled, &tenantID, &tenantEnabled)
 	target := s.dummy
 	found := err == nil && len(hash) == sha256.Size
 	if found {
@@ -75,11 +81,11 @@ func (s *MySQLStore) Authenticate(prefix string, digest [sha256.Size]byte) (Tena
 	return Tenant{ID: tenantID, Enabled: true}, true
 }
 
-func (s *MySQLStore) Route(tenantID, model string) ([]string, bool) {
-	if s == nil || s.db == nil || tenantID == "" || model == "" {
+func (s *MySQLStore) Route(ctx context.Context, tenantID, model string) ([]string, bool) {
+	if ctx == nil || ctx.Err() != nil || s == nil || s.db == nil || tenantID == "" || model == "" {
 		return nil, false
 	}
-	rows, err := s.db.QueryContext(context.Background(), routeMySQL, tenantID, model)
+	rows, err := s.db.QueryContext(ctx, routeMySQL, tenantID, model)
 	if err != nil {
 		return nil, false
 	}
@@ -95,17 +101,34 @@ func (s *MySQLStore) Route(tenantID, model string) ([]string, bool) {
 	return route, rows.Err() == nil && len(route) > 0
 }
 
-// Routes and AllRoutes preserve the existing Resolver's intentionally narrow
+// Routes and LoadStartupState preserve Resolver's intentionally narrow
 // visibility and startup validation interfaces without exposing key material.
-func (s *MySQLStore) Routes(tenantID string) [][]string { return s.routes(routesMySQL, tenantID) }
+func (s *MySQLStore) Routes(ctx context.Context, tenantID string) [][]string {
+	return s.routes(ctx, routesMySQL, tenantID)
+}
 
-func (s *MySQLStore) AllRoutes() [][]string {
-	if s == nil || s.db == nil {
-		return nil
+func (s *MySQLStore) LoadStartupState(ctx context.Context) (StartupState, error) {
+	if ctx == nil || ctx.Err() != nil || s == nil || s.db == nil {
+		return StartupState{}, errors.New("identity store unavailable")
 	}
-	rows, err := s.db.QueryContext(context.Background(), allRoutesMySQL)
+	var tenants, routes, keys uint64
+	if err := s.db.QueryRowContext(ctx, identityCountsMySQL).Scan(&tenants, &routes, &keys); err != nil {
+		return StartupState{}, err
+	}
+	if tenants == 0 && routes == 0 && keys == 0 {
+		return StartupState{Pristine: true}, nil
+	}
+	loaded, err := s.loadAllRoutes(ctx)
 	if err != nil {
-		return nil
+		return StartupState{}, err
+	}
+	return StartupState{Routes: loaded}, nil
+}
+
+func (s *MySQLStore) loadAllRoutes(ctx context.Context) ([][]string, error) {
+	rows, err := s.db.QueryContext(ctx, allRoutesMySQL)
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
 	type key struct{ tenant, model string }
@@ -113,12 +136,12 @@ func (s *MySQLStore) AllRoutes() [][]string {
 	for rows.Next() {
 		var tenantID, model, provider string
 		if rows.Scan(&tenantID, &model, &provider) != nil {
-			return nil
+			return nil, errors.New("identity route scan failed")
 		}
 		grouped[key{tenantID, model}] = append(grouped[key{tenantID, model}], provider)
 	}
 	if rows.Err() != nil {
-		return nil
+		return nil, rows.Err()
 	}
 	keys := make([]key, 0, len(grouped))
 	for value := range grouped {
@@ -129,14 +152,14 @@ func (s *MySQLStore) AllRoutes() [][]string {
 	for _, value := range keys {
 		result = append(result, append([]string(nil), grouped[value]...))
 	}
-	return result
+	return result, nil
 }
 
-func (s *MySQLStore) routes(query, tenantID string) [][]string {
-	if s == nil || s.db == nil || tenantID == "" {
+func (s *MySQLStore) routes(ctx context.Context, query, tenantID string) [][]string {
+	if ctx == nil || ctx.Err() != nil || s == nil || s.db == nil || tenantID == "" {
 		return nil
 	}
-	rows, err := s.db.QueryContext(context.Background(), query, tenantID)
+	rows, err := s.db.QueryContext(ctx, query, tenantID)
 	if err != nil {
 		return nil
 	}

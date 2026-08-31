@@ -50,6 +50,12 @@ trace 摘要只包含 `trace_id`、model、按序 attempt 名称/结果、首块
 
 管理路由仅在 `AGENTMESH_AUTH_STORE=mysql` 的完整持久配置成功时注册，并继续受 `127.0.0.1` 监听限制。其 Bearer 值与 tenant API Key 独立，以固定长度 digest 常量时间比较。
 
+### 持久身份库启动状态（019）
+
+只有 `tenants`、`tenant_model_routes`、`api_keys` 三表均无记录的受控新部署会启动为本地管理引导态：管理 API 可由既有 admin token 调用，但没有有效 tenant Key，因此业务/trace/provider-health 请求仍在 body、路由、限流、配额或 Provider 前以 401 `auth_failed` 拒绝。创建首个合法 tenant/Key 后，下一请求直接读取 Store 并进入既有业务契约，无需重启。
+
+任一表存在部分数据、route 缺失/无效或启动读取失败都不是引导态，服务以既有 `tenant_route_configuration_invalid` 启动拒绝停止，不提供 HTTP 服务。启动读取有独立有界 Context；认证、chat route 与 provider-health 可见 route 使用各自 HTTP request Context，取消或超时不得被转化为认证成功或 Provider attempt。
+
 | 顺序 | 条件/动作 | 响应 | body / 副作用 |
 | --- | --- | --- | --- |
 | 1 | 缺失、畸形或错误 admin token | 401 `admin_auth_failed` | 不读 body；不调用 lifecycle |

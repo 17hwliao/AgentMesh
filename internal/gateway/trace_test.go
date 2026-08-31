@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -92,7 +93,7 @@ func TestTraceQueryRejectsPendingAndUnauthenticated(t *testing.T) {
 
 func observedHandler(t *testing.T, store *tenant.MemoryStore, mock provider.Provider, recorder *observability.Recorder) http.Handler {
 	t.Helper()
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -98,7 +98,10 @@ func (s *Store) RevokeAPIKey(_ context.Context, keyID string) error {
 	return nil
 }
 
-func (s *Store) Authenticate(prefix string, digest [sha256.Size]byte) (tenant.Tenant, bool) {
+func (s *Store) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (tenant.Tenant, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return tenant.Tenant{}, false
+	}
 	s.mu.RLock()
 	record, exists := s.keys[prefix]
 	value := s.tenants[record.tenantID]
@@ -114,7 +117,10 @@ func (s *Store) Authenticate(prefix string, digest [sha256.Size]byte) (tenant.Te
 	return clone(value), true
 }
 
-func (s *Store) Route(tenantID, model string) ([]string, bool) {
+func (s *Store) Route(ctx context.Context, tenantID, model string) ([]string, bool) {
+	if ctx == nil || ctx.Err() != nil {
+		return nil, false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	value, exists := s.tenants[tenantID]
@@ -125,7 +131,10 @@ func (s *Store) Route(tenantID, model string) ([]string, bool) {
 	return append([]string(nil), route...), exists
 }
 
-func (s *Store) Routes(tenantID string) [][]string {
+func (s *Store) Routes(ctx context.Context, tenantID string) [][]string {
+	if ctx == nil || ctx.Err() != nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	value, exists := s.tenants[tenantID]
@@ -135,9 +144,26 @@ func (s *Store) Routes(tenantID string) [][]string {
 	return routes(value)
 }
 
-// AllRoutes declares the demo's sole locally constructed adapter, enabling
-// Resolver validation before the first tenant is created through admin HTTP.
-func (*Store) AllRoutes() [][]string { return [][]string{{"mock"}} }
+// LoadStartupState models the same empty-identity bootstrap boundary as the
+// persistent Store without fabricating a route for the demo.
+func (s *Store) LoadStartupState(ctx context.Context) (tenant.StartupState, error) {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return tenant.StartupState{}, context.Canceled
+		}
+		return tenant.StartupState{}, ctx.Err()
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.tenants) == 0 && len(s.keys) == 0 {
+		return tenant.StartupState{Pristine: true}, nil
+	}
+	var declared [][]string
+	for _, value := range s.tenants {
+		declared = append(declared, routes(value)...)
+	}
+	return tenant.StartupState{Routes: declared}, nil
+}
 
 func routes(value tenant.Tenant) [][]string {
 	result := make([][]string, 0, len(value.ModelRoutes))

@@ -37,13 +37,13 @@ const (
 // TenantResolver supplies only the already-authorized, already-constructed
 // adapters for an authenticated tenant and model.
 type TenantResolver interface {
-	Streamer(tenantID, model string) (router.Streamer, bool)
-	VisibleProviders(tenantID string) []provider.Provider
+	Streamer(context.Context, string, string) (router.Streamer, bool)
+	VisibleProviders(context.Context, string) []provider.Provider
 }
 
 type observedTenantResolver interface {
 	TenantResolver
-	StreamerWithObserver(tenantID, model string, observer router.Observer) (router.Streamer, bool)
+	StreamerWithObserver(context.Context, string, string, router.Observer) (router.Streamer, bool)
 }
 
 // QuotaGate is deliberately allow-only in this slice. Redis reservations and
@@ -162,7 +162,7 @@ func (s *Server) handleProviderHealth(w http.ResponseWriter, request *http.Reque
 			writeJSONError(w, http.StatusUnauthorized, auth.CodeFailed)
 			return
 		}
-		providers = s.tenantResolver.VisibleProviders(tenantID)
+		providers = s.tenantResolver.VisibleProviders(request.Context(), tenantID)
 	}
 	result := make([]status, 0, len(providers))
 	for _, candidate := range providers {
@@ -226,9 +226,9 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		}
 		var allowed bool
 		if observed, ok := s.tenantResolver.(observedTenantResolver); ok && session != nil {
-			streamer, allowed = observed.StreamerWithObserver(tenantID, input.Model, session)
+			streamer, allowed = observed.StreamerWithObserver(request.Context(), tenantID, input.Model, session)
 		} else {
-			streamer, allowed = s.tenantResolver.Streamer(tenantID, input.Model)
+			streamer, allowed = s.tenantResolver.Streamer(request.Context(), tenantID, input.Model)
 		}
 		if !allowed {
 			completeTrace(session, modelNotAllowed, false)

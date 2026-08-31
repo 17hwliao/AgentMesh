@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +30,7 @@ func TestDisabledReservationGateKeepsConcurrentAuthenticatedSSEFallback(t *testi
 	}}, []tenant.APIKeyRecord{record(raw, "tenant_a")})
 	primary := provider.NewMock(provider.MockConfig{Name: "primary", FailBeforeFirst: true, FailAfterChunks: -1})
 	fallback := provider.NewMock(provider.MockConfig{Name: "fallback", Chunks: []string{"fallback-ok"}, FailAfterChunks: -1})
-	resolver, err := tenant.NewResolver(store, []string{"primary", "fallback"}, []provider.Provider{primary, fallback})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"primary", "fallback"}, []provider.Provider{primary, fallback})
 	if err != nil {
 		t.Fatal(err)
 	}

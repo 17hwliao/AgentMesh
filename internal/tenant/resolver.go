@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"context"
 	"errors"
 
 	"agentmesh/internal/provider"
@@ -20,14 +21,14 @@ type Resolver struct {
 // NewResolver accepts only routes that are ordered subsets of the global
 // runtime selection. The mock mode remains mutually exclusive with real
 // adapters, matching runtime.Build's 002 safety contract.
-func NewResolver(store Store, logical []string, providers []provider.Provider) (*Resolver, error) {
-	if store == nil || len(logical) == 0 || len(providers) == 0 {
+func NewResolver(ctx context.Context, store Store, logical []string, providers []provider.Provider) (*Resolver, error) {
+	if ctx == nil || store == nil || len(logical) == 0 || len(providers) == 0 {
 		return nil, errors.New("tenant_route_configuration_invalid")
 	}
 	r := &Resolver{store: store, logical: append([]string(nil), logical...), providers: append([]provider.Provider(nil), providers...), byName: map[string]provider.Provider{}}
 	if len(logical) == 1 && logical[0] == "mock" {
 		r.mockMode = true
-		return r, r.validateDeclaredRoutes()
+		return r, r.validateDeclaredRoutes(ctx)
 	}
 	for _, name := range logical {
 		if name == "mock" {
@@ -42,21 +43,21 @@ func NewResolver(store Store, logical []string, providers []provider.Provider) (
 			return nil, errors.New("tenant_route_configuration_invalid")
 		}
 	}
-	return r, r.validateDeclaredRoutes()
+	return r, r.validateDeclaredRoutes(ctx)
 }
 
 // Streamer returns a fresh router over the authorized, already-built adapter
 // order. A route that is not an ordered global subset is refused before any
 // provider attempt.
-func (r *Resolver) Streamer(tenantID, model string) (router.Streamer, bool) {
-	return r.StreamerWithObserver(tenantID, model, nil)
+func (r *Resolver) Streamer(ctx context.Context, tenantID, model string) (router.Streamer, bool) {
+	return r.StreamerWithObserver(ctx, tenantID, model, nil)
 }
 
 // StreamerWithObserver preserves the declared tenant route while attaching an
 // optional passive Router observer. The observer cannot construct or reorder
 // adapters.
-func (r *Resolver) StreamerWithObserver(tenantID, model string, observer router.Observer) (router.Streamer, bool) {
-	route, ok := r.store.Route(tenantID, model)
+func (r *Resolver) StreamerWithObserver(ctx context.Context, tenantID, model string, observer router.Observer) (router.Streamer, bool) {
+	route, ok := r.store.Route(ctx, tenantID, model)
 	if !ok || !r.validRoute(route) {
 		return nil, false
 	}
@@ -77,10 +78,10 @@ func (r *Resolver) StreamerWithObserver(tenantID, model string, observer router.
 // VisibleProviders returns only adapters authorized by at least one model
 // route for the authenticated tenant. It intentionally exposes no route/model
 // mapping or tenant identifier.
-func (r *Resolver) VisibleProviders(tenantID string) []provider.Provider {
+func (r *Resolver) VisibleProviders(ctx context.Context, tenantID string) []provider.Provider {
 	seen := map[string]bool{}
 	result := make([]provider.Provider, 0)
-	for _, name := range r.allowedNames(tenantID) {
+	for _, name := range r.allowedNames(ctx, tenantID) {
 		if r.mockMode {
 			for _, candidate := range r.providers {
 				if !seen[candidate.Name()] {
@@ -99,13 +100,13 @@ func (r *Resolver) VisibleProviders(tenantID string) []provider.Provider {
 	return result
 }
 
-func (r *Resolver) allowedNames(tenantID string) []string {
+func (r *Resolver) allowedNames(ctx context.Context, tenantID string) []string {
 	// Store exposes individual routes so callers cannot enumerate tenant records.
 	// Resolver validates visibility as requests arrive; health visibility is kept
 	// conservative by asking the store's explicit route index below when present.
-	if indexed, ok := r.store.(interface{ Routes(string) [][]string }); ok {
+	if indexed, ok := r.store.(routeReader); ok {
 		var names []string
-		for _, route := range indexed.Routes(tenantID) {
+		for _, route := range indexed.Routes(ctx, tenantID) {
 			names = append(names, route...)
 		}
 		return names
@@ -119,7 +120,10 @@ func (r *Resolver) validRoute(route []string) bool {
 
 // Routes lets Resolver obtain a tenant-local view for health without exposing
 // raw keys or other tenants. It returns defensive copies.
-func (s *MemoryStore) Routes(tenantID string) [][]string {
+func (s *MemoryStore) Routes(ctx context.Context, tenantID string) [][]string {
+	if ctx == nil || ctx.Err() != nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	t, ok := s.tenants[tenantID]
@@ -133,16 +137,22 @@ func (s *MemoryStore) Routes(tenantID string) [][]string {
 	return routes
 }
 
-func (r *Resolver) validateDeclaredRoutes() error {
-	all, ok := r.store.(interface{ AllRoutes() [][]string })
+func (r *Resolver) validateDeclaredRoutes(ctx context.Context) error {
+	all, ok := r.store.(startupReader)
 	if !ok {
 		return errors.New("tenant_route_configuration_invalid")
 	}
-	routes := all.AllRoutes()
-	if len(routes) == 0 {
+	state, err := all.LoadStartupState(ctx)
+	if err != nil {
 		return errors.New("tenant_route_configuration_invalid")
 	}
-	for _, route := range routes {
+	if state.Pristine {
+		return nil
+	}
+	if len(state.Routes) == 0 {
+		return errors.New("tenant_route_configuration_invalid")
+	}
+	for _, route := range state.Routes {
 		if !r.validRoute(route) {
 			return errors.New("tenant_route_configuration_invalid")
 		}
@@ -150,9 +160,8 @@ func (r *Resolver) validateDeclaredRoutes() error {
 	return nil
 }
 
-// AllRoutes is used only during local bootstrap validation. Like Routes, it
-// returns copies and never exposes API-key records.
-func (s *MemoryStore) AllRoutes() [][]string {
+// allRoutes returns copies and never exposes API-key records.
+func (s *MemoryStore) allRoutes() [][]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var routes [][]string

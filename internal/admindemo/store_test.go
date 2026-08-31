@@ -19,7 +19,7 @@ func TestStoreLifecycleRevokesAuthenticationWithoutStoringRawKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.Authenticate(raw[:8], sha256.Sum256([]byte(raw))); !ok {
+	if _, ok := store.Authenticate(context.Background(), raw[:8], sha256.Sum256([]byte(raw))); !ok {
 		t.Fatal("created key did not authenticate")
 	}
 	if record := store.keys[key.Prefix]; record.hash != sha256.Sum256([]byte(raw)) || record.enabled == false {
@@ -28,7 +28,7 @@ func TestStoreLifecycleRevokesAuthenticationWithoutStoringRawKey(t *testing.T) {
 	if err := store.RevokeAPIKey(context.Background(), key.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := store.Authenticate(raw[:8], sha256.Sum256([]byte(raw))); ok {
+	if _, ok := store.Authenticate(context.Background(), raw[:8], sha256.Sum256([]byte(raw))); ok {
 		t.Fatal("revoked key still authenticated")
 	}
 }

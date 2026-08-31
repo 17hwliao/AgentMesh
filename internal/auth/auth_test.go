@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -30,7 +31,7 @@ func TestBootstrapStoresOnlyDerivedKeyAndAuthenticates(t *testing.T) {
 	if !called {
 		t.Fatal("valid key rejected")
 	}
-	if _, ok := store.Route("tenant_a", "mock-model"); !ok {
+	if _, ok := store.Route(context.Background(), "tenant_a", "mock-model"); !ok {
 		t.Fatal("missing route")
 	}
 }

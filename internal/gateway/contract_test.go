@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,7 +18,7 @@ import (
 // specs/003-local-api-key-gate/contract.md without changing gateway behavior.
 func TestHTTPContractPublicAndTenantHealth(t *testing.T) {
 	raw, store, mock := authenticatedStore(t)
-	resolver, err := tenant.NewResolver(store, []string{"mock"}, []provider.Provider{mock})
+	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		t.Fatal(err)
 	}

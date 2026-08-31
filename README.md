@@ -225,6 +225,12 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 撤销，不能查询或恢复原始值。013 的 migration、repository、管理 API 与离线 HTTP 测试已覆盖；本机尚未配置真实 MySQL，
 因此没有把替身结果写成真实持久化实证。
 
+019 修复了首次部署的空库启动死锁：仅当 `tenants`、`tenant_model_routes`、`api_keys` 三表均无记录时，持久模式可启动为
+本地管理引导态。此时没有有效 tenant Key，所有业务请求仍在读取 body、路由、限流、配额或 Provider 前以 401 `auth_failed`
+拒绝；只有已有 admin token 的回环管理面可创建首个合法 tenant/Key。任一表有残留、routes 缺失或无效、或读取失败都不会被
+当作空库，服务保持启动拒绝。认证和 route 读取继续每请求直读 Store，不缓存；离线替身覆盖该行为，但本机仍没有真实 MySQL
+持久认证成功实证。
+
 ## 1.11 真实 Provider 受控联调（014）
 
 `make verify-real-provider` 是 002 Ark/Ollama Adapter 的独立 opt-in 联调入口。它要求当前 shell 同时设置

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"agentmesh/internal/admin"
 	"agentmesh/internal/auth"
@@ -60,7 +62,9 @@ func main() {
 		}
 		log.Fatal("provider_configuration_invalid")
 	}
-	resolver, err := tenant.NewResolver(store, logicalProviders, providers)
+	startupContext, cancelStartup := context.WithTimeout(context.Background(), 2*time.Second)
+	resolver, err := tenant.NewResolver(startupContext, store, logicalProviders, providers)
+	cancelStartup()
 	if err != nil {
 		log.Fatal("tenant_route_configuration_invalid")
 	}
