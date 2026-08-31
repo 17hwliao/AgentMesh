@@ -4,6 +4,13 @@ if ($preflightExit -ne 0) {
     $preflight
     exit 1
 }
+$providerSelection = $env:AGENTMESH_REAL_PROVIDERS.Trim()
+$routeJSON = switch ($providerSelection) {
+    'ark' { '{"provider-evidence":["ark"]}' }
+    'ollama' { '{"provider-evidence":["ollama"]}' }
+    'ark,ollama' { '{"provider-evidence":["ark","ollama"]}' }
+    default { throw 'provider verification selection unavailable after preflight' }
+}
 
 $variables = @(
     'AGENTMESH_BOOTSTRAP_API_KEY', 'AGENTMESH_BOOTSTRAP_TENANT_ID', 'AGENTMESH_BOOTSTRAP_MODEL_ROUTES',
@@ -30,14 +37,14 @@ try {
     Remove-Item -LiteralPath $apiBinary, $stdoutLog, $stderrLog -Force -ErrorAction SilentlyContinue
     $env:AGENTMESH_BOOTSTRAP_API_KEY = $temporaryKey
     $env:AGENTMESH_BOOTSTRAP_TENANT_ID = 'provider_verify'
-    $env:AGENTMESH_BOOTSTRAP_MODEL_ROUTES = '{"provider-evidence":["ark","ollama"]}'
+    $env:AGENTMESH_BOOTSTRAP_MODEL_ROUTES = $routeJSON
     $env:AGENTMESH_API_KEY = $temporaryKey
     Remove-Item Env:AGENTMESH_AUTH_STORE, Env:AGENTMESH_AUTH_MYSQL_DSN, Env:AGENTMESH_ADMIN_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:AGENTMESH_QUOTA_MODE, Env:AGENTMESH_QUOTA_MYSQL_DSN, Env:AGENTMESH_QUOTA_REDIS_URL -ErrorAction SilentlyContinue
 
     & go build -o $apiBinary ./cmd/api
     if ($LASTEXITCODE -ne 0) { throw 'provider verification gateway build failed' }
-    $process = Start-Process -FilePath $apiBinary -ArgumentList @('--addr', '127.0.0.1:18083', '--providers', 'ark,ollama') -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+    $process = Start-Process -FilePath $apiBinary -ArgumentList @('--addr', '127.0.0.1:18083', '--providers', $providerSelection) -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     $ready = $false
     for ($index = 0; $index -lt 40; $index++) {
         Start-Sleep -Milliseconds 250
