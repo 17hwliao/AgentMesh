@@ -285,6 +285,22 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 该命令使用演示专用内存 lifecycle，进程退出即丢失所有状态。它不启动 `cmd/api` 的持久 auth mode，不连接 MySQL、Redis、
 Ark、Ollama 或 Docker，也不证明 013 的 migration、持久 Store 或真实 Key 生命周期已成功运行。
 
+## 1.15 本机回环并发与延迟评测（017）
+
+```powershell
+make benchmark-local
+```
+
+该命令启动短生命周期 `127.0.0.1` mock 网关，并以临时内存 tenant/API Key 完整消费 SSE chat 响应。它默认在预热后执行
+5 轮、每轮 200 请求、20 并发，另启动 1,000 个并发限流调用者；为避免把 Windows 的瞬时 socket 建连上限混入限流结论，
+该场景的 loopback HTTP 客户端最多使用 100 条连接（该值也写入报告）。原始 JSON 自动写入被 Git 忽略的
+`.private/benchmark-results/`，同时输出不含 Key 的安全报告。报告带当前 Git commit、运行时间、Go 版本、CPU、GOMAXPROCS、
+完整参数、所有样本成功/失败计数、成功样本 p50/p95/p99、吞吐以及限流 200/429/其他状态/Provider attempt 计数。
+
+分位数只从同一次运行的成功 SSE 原始样本计算；任意请求失败、SSE 未完成或限流断言失败时，报告仍会落盘并以非零退出，不能拿剩余
+成功样本冒充全通过。限流场景只断言单进程允许数不超过 burst、429 不进入 Provider，不是 Redis 预扣、跨进程或生产容量证据。
+所有数字均仅描述本机 loopback HTTP、鉴权、路由与 mock 流；不代表真实 Ark/Ollama 首 token、MySQL/Redis、跨机网络、成本或 SLO。
+
 ## 2. 问题边界
 
 ### 要解决
