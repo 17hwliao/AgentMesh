@@ -257,6 +257,13 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 桶初始装满，每个已认证聊天请求消耗一枚令牌，并按每分钟配置连续补充。该实现只保存在当前进程内存，重启即清空，多个
 API 进程不会共享状态；它不是 Redis、分布式限流、持久化租户策略或精确 Token 计费的承诺。
 
+## 1.13 HTTP 契约入口（015）
+
+当前 HTTP 事实的单一入口是 [HTTP 契约](specs/003-local-api-key-gate/contract.md)：它按端点记录 tenant/admin
+鉴权、限流、body 解码、路由、配额与 Provider attempt 的实际顺序，以及 `rate_limited`、`Retry-After`、
+`X-AgentMesh-Trace-ID`、trace 404 收敛和管理面边界。该文档描述的是 `6753800` 的实现，不把本地替身、受控拒绝或
+未配置的真实环境写成成功实证。
+
 ## 2. 问题边界
 
 ### 要解决
