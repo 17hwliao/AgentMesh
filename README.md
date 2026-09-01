@@ -1,5 +1,7 @@
 # AgentMesh：多租户 LLM 网关与 Agent Runtime
 
+> 文档导航：[docs/README.md](docs/README.md)。该导航保留并分类现有规格、决策与本机证据，不替代原始文档。
+
 ## 1. 项目目标
 
 AgentMesh 是面向多个 AI 应用的 Go 模型运行时。它统一处理模型 Provider 接入、流式转发、租户鉴权、Token 配额、限流和调用观测，让业务 Agent 专注于自身逻辑。
