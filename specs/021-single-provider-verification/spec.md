@@ -31,5 +31,5 @@ created: 2026-08-31
 
 - [x] T001 选择驱动的预检与离线配置测试。
 - [x] T002 选择驱动的验证脚本、脚本级测试和 README/DoD。
-- [ ] T003 用本机 Ollama 运行验证并留存脱敏结果。
-- [ ] T004 全量验证、私有复盘、提交和 fast-forward `master`。
+- [x] T003 用本机 Ollama 运行验证并留存脱敏结果。
+- [x] T004 全量验证、私有复盘、提交和 fast-forward `master`。

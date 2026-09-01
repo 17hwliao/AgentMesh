@@ -248,8 +248,10 @@ Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
 行为，首块后不切换。try/finally 会停止子进程、删除临时产物并恢复被改写的环境变量。摘要只包含状态、稳定结果码、尝试数和
 Provider 名称，绝不包含 endpoint、模型、Key、prompt、delta 或上游原文。
 
-2026-08-30 本机实际执行该入口时五项环境变量均未提供，得到上述受控拒绝；没有 Ark/Ollama 网络请求或真实流成功事实。
-将来操作者配置好环境后，一次真实运行最多证明本次 endpoint 的连通与流式互操作，不能据此推断成本、性能、配额或生产可用性。
+2026-08-30 本机实际执行该入口时五项环境变量均未提供，得到上述受控拒绝；没有 Ark/Ollama 网络请求或真实流成功事实。021 修正
+验证预检后，2026-09-01 以 `AGENTMESH_REAL_PROVIDERS=ollama` 和本机 `qwen2.5:7b` 实际完成一次：
+`verification_completed`、`success`、1 次网络/Provider attempt、Provider 为 `ollama`。这只证明该次本机 Ollama endpoint
+与单 Provider SSE 的互操作；Ark 仍只有 fixture，且一次成功不能推断成本、性能、配额或生产可用性。
 
 ## 1.12 每租户内存令牌桶限流（012）
 
