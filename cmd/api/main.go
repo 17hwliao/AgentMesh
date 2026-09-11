@@ -11,8 +11,10 @@ import (
 
 	"agentmesh/internal/admin"
 	"agentmesh/internal/auth"
+	"agentmesh/internal/embedding"
 	"agentmesh/internal/gateway"
 	"agentmesh/internal/observability"
+	"agentmesh/internal/raganswer"
 	"agentmesh/internal/ratelimit"
 	"agentmesh/internal/reservation"
 	"agentmesh/internal/runtime"
@@ -82,6 +84,20 @@ func main() {
 		}
 		log.Fatal("provider_configuration_invalid")
 	}
+	embeddingProviders, err := embedding.Build(os.Getenv)
+	if err != nil {
+		if code, ok := embedding.IsConfigurationError(err); ok {
+			log.Fatal(code)
+		}
+		log.Fatal("embedding_provider_configuration_invalid")
+	}
+	answerProviders, err := raganswer.Build(os.Getenv)
+	if err != nil {
+		if code, ok := raganswer.IsConfigurationError(err); ok {
+			log.Fatal(code)
+		}
+		log.Fatal("rag_answer_provider_configuration_invalid")
+	}
 	startupContext, cancelStartup := context.WithTimeout(context.Background(), 2*time.Second)
 	resolver, err := tenant.NewResolver(startupContext, store, logicalProviders, providers)
 	cancelStartup()
@@ -98,6 +114,16 @@ func main() {
 	defer cleanupReservation()
 	server := gateway.NewWithTenantRoutingAndRecorderAndReservations(resolver, observability.NewRecorder(observability.DefaultCapacity, nil, nil), reservationGate)
 	server.SetRateGate(rateGate)
+	embeddingHandler, err := embedding.NewHandler(store, embeddingProviders)
+	if err != nil {
+		log.Fatal("embedding_handler_configuration_invalid")
+	}
+	server.SetEmbeddingHandler(embeddingHandler)
+	answerHandler, err := raganswer.NewHandler(store, answerProviders)
+	if err != nil {
+		log.Fatal("rag_answer_handler_configuration_invalid")
+	}
+	server.SetRAGAnswerHandler(answerHandler)
 	log.Printf("AgentMesh gateway listening on http://%s", *address)
 	protected := server.AuthenticatedHandler(func(next http.Handler) http.Handler {
 		return auth.Authenticate(store, next)

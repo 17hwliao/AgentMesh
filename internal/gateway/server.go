@@ -16,6 +16,7 @@ import (
 	"agentmesh/internal/auth"
 	"agentmesh/internal/observability"
 	"agentmesh/internal/provider"
+	"agentmesh/internal/raganswer"
 	"agentmesh/internal/ratelimit"
 	"agentmesh/internal/reservation"
 	"agentmesh/internal/router"
@@ -62,6 +63,8 @@ type Server struct {
 	router         router.Streamer
 	providers      []provider.Provider
 	tenantResolver TenantResolver
+	embeddings     http.Handler
+	ragAnswers     http.Handler
 	quota          QuotaGate
 	rateLimit      ratelimit.Gate
 	reservations   reservation.StreamGate
@@ -100,11 +103,31 @@ func (s *Server) SetRateGate(gate ratelimit.Gate) {
 	s.rateLimit = gate
 }
 
+// SetEmbeddingHandler installs the authenticated, non-streaming embedding
+// endpoint. Keeping the handler optional preserves existing chat-only tests
+// and deployments while allowing cmd/api to expose the gateway capability.
+func (s *Server) SetEmbeddingHandler(handler http.Handler) {
+	s.embeddings = handler
+}
+
+// SetRAGAnswerHandler installs the separate, non-streaming answer endpoint.
+// Its request is expected to carry already-retrieved context; it does not
+// expose a SQL, DDL, or performance decision endpoint.
+func (s *Server) SetRAGAnswerHandler(handler http.Handler) {
+	s.ragAnswers = handler
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.HandleFunc("/health/providers", s.handleProviderHealth)
 	mux.HandleFunc(chatPath, s.handleChat)
+	if s.embeddings != nil {
+		mux.Handle("/v1/embeddings", s.embeddings)
+	}
+	if s.ragAnswers != nil {
+		mux.Handle(raganswer.AnswersPath, s.ragAnswers)
+	}
 	return mux
 }
 
@@ -115,6 +138,12 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
 	mux.Handle(chatPath, authenticate(s.withRateLimit(http.HandlerFunc(s.handleChat))))
+	if s.embeddings != nil {
+		mux.Handle("/v1/embeddings", authenticate(s.embeddings))
+	}
+	if s.ragAnswers != nil {
+		mux.Handle(raganswer.AnswersPath, authenticate(s.withRateLimit(s.ragAnswers)))
+	}
 	mux.Handle(tracePath, authenticate(http.HandlerFunc(s.handleTrace)))
 	return mux
 }

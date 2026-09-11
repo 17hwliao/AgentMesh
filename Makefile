@@ -1,4 +1,4 @@
-.PHONY: demo-stage-1 demo-stage-4 demo-admin verify-real-storage verify-real-provider benchmark-local
+.PHONY: demo-stage-1 demo-stage-4 demo-admin verify-real-storage verify-real-provider verify-real-rag-answer benchmark-local
 
 demo-stage-1:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-stage-1.ps1
@@ -14,6 +14,9 @@ verify-real-storage:
 
 verify-real-provider:
 	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-real-provider.ps1
+
+verify-real-rag-answer:
+	powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-real-rag-answer.ps1
 
 benchmark-local:
 	go run ./cmd/local-benchmark
