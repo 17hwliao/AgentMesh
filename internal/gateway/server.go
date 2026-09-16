@@ -62,6 +62,7 @@ type Server struct {
 	router         router.Streamer
 	providers      []provider.Provider
 	tenantResolver TenantResolver
+	embeddings     http.Handler
 	quota          QuotaGate
 	rateLimit      ratelimit.Gate
 	reservations   reservation.StreamGate
@@ -100,11 +101,21 @@ func (s *Server) SetRateGate(gate ratelimit.Gate) {
 	s.rateLimit = gate
 }
 
+// SetEmbeddingHandler installs the authenticated, non-streaming embedding
+// endpoint. Keeping the handler optional preserves existing chat-only tests
+// and deployments while allowing cmd/api to expose the gateway capability.
+func (s *Server) SetEmbeddingHandler(handler http.Handler) {
+	s.embeddings = handler
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.HandleFunc("/health/providers", s.handleProviderHealth)
 	mux.HandleFunc(chatPath, s.handleChat)
+	if s.embeddings != nil {
+		mux.Handle("/v1/embeddings", s.embeddings)
+	}
 	return mux
 }
 
@@ -115,6 +126,9 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
 	mux.Handle(chatPath, authenticate(s.withRateLimit(http.HandlerFunc(s.handleChat))))
+	if s.embeddings != nil {
+		mux.Handle("/v1/embeddings", authenticate(s.embeddings))
+	}
 	mux.Handle(tracePath, authenticate(http.HandlerFunc(s.handleTrace)))
 	return mux
 }
@@ -132,7 +146,7 @@ func (s *Server) withRateLimit(next http.Handler) http.Handler {
 			writeJSONError(w, http.StatusUnauthorized, auth.CodeFailed)
 			return
 		}
-		decision := s.rateLimit.Admit(tenantID)
+		decision := s.rateLimit.Admit(request.Context(), tenantID)
 		if decision.Allowed {
 			next.ServeHTTP(w, request)
 			return

@@ -18,7 +18,7 @@ $stdoutLog = "$logBase.out"
 $stderrLog = "$logBase.err"
 $apiBinary = Join-Path $env:TEMP 'agentmesh-demo-stage-1-api.exe'
 Remove-Item -LiteralPath $stdoutLog, $stderrLog, $apiBinary -Force -ErrorAction SilentlyContinue
-& go build -o $apiBinary ./cmd/api
+& go build -buildvcs=false -o $apiBinary ./cmd/api
 if ($LASTEXITCODE -ne 0) { throw 'mock gateway build failed' }
 $process = Start-Process -FilePath $apiBinary -ArgumentList @('--addr', '127.0.0.1:18082') -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
 try {
@@ -34,9 +34,9 @@ try {
         } catch {}
     }
     if (-not $ready) { throw 'mock gateway did not become ready' }
-    $summary = & go run ./cmd/summary-cli --endpoint 'http://127.0.0.1:18082' --model 'mock-model' --text 'stage one summary' 2>&1
+    $summary = & go run -buildvcs=false ./cmd/summary-cli --endpoint 'http://127.0.0.1:18082' --model 'mock-model' --text 'stage one summary' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "summary CLI failed: $($summary -join ' ')" }
-    $diagnose = & go run ./cmd/sql-diagnose-cli --endpoint 'http://127.0.0.1:18082' --model 'mock-model' --sql 'SELECT id FROM users' 2>&1
+    $diagnose = & go run -buildvcs=false ./cmd/sql-diagnose-cli --endpoint 'http://127.0.0.1:18082' --model 'mock-model' --sql 'SELECT id FROM users' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "SQL diagnostic CLI failed: $($diagnose -join ' ')" }
     $chat = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:18082/v1/chat/completions' -Method Post -Headers @{ Authorization = "Bearer $stageKey" } -ContentType 'application/json' -Body '{"model":"mock-model","messages":[{"role":"user","content":"trace demonstration"}],"stream":true}'
     $traceID = $chat.Headers['X-AgentMesh-Trace-ID']

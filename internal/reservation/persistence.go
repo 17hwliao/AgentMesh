@@ -216,9 +216,6 @@ func (r *SQLRepository) MarkReserved(ctx context.Context, tenantID, reservationI
 	if err := exactlyOne(result); err != nil {
 		return PersistentReservation{}, err
 	}
-	if err := r.insertUsageOutbox(ctx, tx, tenantID, reservationID, expectedVersion); err != nil {
-		return PersistentReservation{}, err
-	}
 	value, err := scanReservation(tx.QueryRowContext(ctx, reservationByIDSQL, reservationID, tenantID))
 	if err != nil {
 		return PersistentReservation{}, err
@@ -344,6 +341,13 @@ func (r *SQLRepository) MarkSettled(ctx context.Context, tenantID, reservationID
 // transaction. A failure prevents the terminal Reservation commit.
 func (r *SQLRepository) insertUsageOutbox(ctx context.Context, tx sqlTransaction, tenantID, reservationID string, operationVersion uint64) error {
 	result, err := tx.ExecContext(ctx, insertUsageOutboxSQL, operationVersion, reservationID, tenantID)
+	if err != nil {
+		return err
+	}
+	if err := exactlyOne(result); err != nil {
+		return err
+	}
+	result, err = tx.ExecContext(ctx, insertUsageKafkaOutboxSQL, reservationID)
 	if err != nil {
 		return err
 	}
@@ -621,6 +625,22 @@ const insertUsageOutboxSQL = `INSERT INTO usage_outbox
     SELECT r.reservation_id, r.tenant_id, r.request_id, r.model, r.state, ?, r.reserved_units, r.settled_units, r.released_units, r.usage_observed, r.settlement_kind, r.updated_at, NULL, r.updated_at
     FROM quota_reservations AS r
     WHERE r.reservation_id = ? AND r.tenant_id = ? AND r.state IN ('settled', 'cancelled')`
+
+const insertUsageKafkaOutboxSQL = `INSERT INTO usage_kafka_outbox
+    (event_id, reservation_id, operation_version, topic, payload, available_at, created_at)
+SELECT SHA2(CONCAT(u.reservation_id, ':', u.operation_version), 256), u.reservation_id, u.operation_version,
+    'agentmesh.usage.v1',
+      JSON_OBJECT('schema_version', 1,
+          'event_id', SHA2(CONCAT(u.reservation_id, ':', u.operation_version), 256),
+          'attempt', COALESCE((SELECT MAX(a.ordinal) FROM provider_attempts AS a WHERE a.reservation_id = u.reservation_id), 1),
+          'reservation_id', u.reservation_id, 'tenant_id', u.tenant_id, 'request_id', u.request_id,
+          'model', u.model, 'final_state', u.final_state, 'operation_version', u.operation_version,
+          'reserved_units', u.reserved_units, 'settled_units', u.settled_units,
+          'released_units', u.released_units, 'usage_observed', JSON_EXTRACT(IF(u.usage_observed, 'true', 'false'), '$'),
+        'settlement_kind', u.settlement_kind,
+        'finalized_at', DATE_FORMAT(u.finalized_at, '%Y-%m-%dT%H:%i:%s.%fZ')),
+    u.created_at, u.created_at
+FROM usage_outbox AS u WHERE u.reservation_id = ?`
 
 const usageOutboxColumns = `reservation_id, tenant_id, request_id, model, final_state, operation_version, reserved_units, settled_units, released_units, usage_observed, settlement_kind, finalized_at, projected_at, created_at`
 const unprojectedUsageOutboxSQL = `SELECT ` + usageOutboxColumns + ` FROM usage_outbox

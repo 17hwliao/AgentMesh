@@ -103,7 +103,7 @@ type countingRateGate struct {
 	decision ratelimit.Decision
 }
 
-func (g *countingRateGate) Admit(string) ratelimit.Decision {
+func (g *countingRateGate) Admit(context.Context, string) ratelimit.Decision {
 	g.calls++
 	return g.decision
 }

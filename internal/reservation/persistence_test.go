@@ -138,7 +138,7 @@ func TestSQLRepositoryTerminalWritesOutboxInSameTransaction(t *testing.T) {
 			if err := testCase.run(repo); err != nil {
 				t.Fatal(err)
 			}
-			if !tx.committed || len(tx.execQueries) != 2 || !strings.Contains(tx.execQueries[1], "INSERT INTO usage_outbox") || !strings.Contains(tx.execQueries[1], "SELECT r.reservation_id") {
+			if !tx.committed || len(tx.execQueries) != 3 || !strings.Contains(tx.execQueries[1], "INSERT INTO usage_outbox") || !strings.Contains(tx.execQueries[1], "SELECT r.reservation_id") || !strings.Contains(tx.execQueries[2], "INSERT INTO usage_kafka_outbox") || !strings.Contains(tx.execQueries[2], "JSON_EXTRACT") {
 				t.Fatalf("committed=%t queries=%q", tx.committed, tx.execQueries)
 			}
 		})
@@ -159,7 +159,7 @@ func TestSQLRepositoryTerminalCommitFailureRollsBackOutbox(t *testing.T) {
 	tx := &fakeTransaction{rows: []sqlRow{reservationRow("reservation-a", Cancelled, 4, now)}, commitErr: errors.New("commit unavailable")}
 	repo := newSQLRepository(fakeDatabase{tx: tx}, func() time.Time { return now })
 	_, err := repo.MarkCancelled(context.Background(), "tenant-a", "reservation-a", 3)
-	if err == nil || tx.committed || !tx.rolledBack || len(tx.execQueries) != 2 {
+	if err == nil || tx.committed || !tx.rolledBack || len(tx.execQueries) != 3 {
 		t.Fatalf("err=%v committed=%t rolled_back=%t queries=%q", err, tx.committed, tx.rolledBack, tx.execQueries)
 	}
 }

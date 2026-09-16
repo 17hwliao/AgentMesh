@@ -467,3 +467,42 @@ agentmesh/
   deployments/docker-compose.yml
   tests/
 ```
+
+## Usage Kafka projection
+
+Spec 024 adds an asynchronous projection of the existing terminal usage
+ledger. `quota_reservations`, `usage_outbox`, and `usage_kafka_outbox` are
+written together in the terminal MySQL transaction. Kafka is used only for
+delivery to a read projection; it is not the quota source of truth.
+
+The event contract is intentionally limited to identifiers, model, final
+state, operation version and aggregate usage units. Prompt, response, API key,
+bearer token, endpoint and raw token text are not accepted by the strict event
+decoder or emitted by the SQL snapshot.
+
+Outbox relays use a bounded MySQL ownership lease (`lease_owner` and
+`lease_until`) with `FOR UPDATE SKIP LOCKED`. Multiple relay processes can
+therefore scan the same outbox without concurrently owning a row. If a relay
+crashes, expiry makes the row eligible for another relay; a stale relay cannot
+overwrite the new owner's publish or retry result. This preserves at-least-once
+Kafka delivery while removing the former single-relay assumption.
+
+Run deterministic tests with:
+
+```powershell
+go test -count=1 ./internal/usagekafka ./internal/reservation
+```
+
+Start the isolated local dependencies with:
+
+```powershell
+docker compose -f deployments/kafka-usage-compose.yml up -d --wait
+go run ./cmd/usage-kafka-smoke
+docker compose -f deployments/kafka-usage-compose.yml down
+```
+
+The smoke command uses `127.0.0.1:13309` for MySQL and `127.0.0.1:19093` for
+Kafka by default. Override them with
+`AGENTMESH_USAGE_KAFKA_MYSQL_DSN` and `AGENTMESH_USAGE_KAFKA_BROKERS`; it emits
+JSON only after a real outbox publish, Kafka consume, duplicate delivery and
+MySQL projection check succeed.

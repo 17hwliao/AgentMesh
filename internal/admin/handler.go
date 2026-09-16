@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/json"
@@ -27,10 +28,19 @@ type Handler struct {
 	lifecycle tenant.Lifecycle
 	tokenHash [sha256.Size]byte
 	routeOK   func([]string) bool
+	summary   func(context.Context) (any, error)
 }
 
 func NewHandler(lifecycle tenant.Lifecycle, tokenHash [sha256.Size]byte, routeOK func([]string) bool) *Handler {
 	return &Handler{lifecycle: lifecycle, tokenHash: tokenHash, routeOK: routeOK}
+}
+
+// SetUsageSummary attaches a safe aggregate runtime summary. It is optional so
+// existing admin-only deployments do not gain a new dependency implicitly.
+func (h *Handler) SetUsageSummary(summary func(context.Context) (any, error)) {
+	if h != nil {
+		h.summary = summary
+	}
 }
 
 // ServeHTTP verifies the independent admin credential before it calls any
@@ -47,9 +57,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.createAPIKey(w, r)
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/admin/api-keys/"):
 		h.revokeAPIKey(w, r, strings.TrimPrefix(r.URL.Path, "/admin/api-keys/"))
+	case r.Method == http.MethodGet && r.URL.Path == "/admin/usage/outbox-summary":
+		h.usageSummary(w, r)
 	default:
 		writeError(w, http.StatusNotFound, CodeRequestInvalid)
 	}
+}
+
+func (h *Handler) usageSummary(w http.ResponseWriter, r *http.Request) {
+	if h.summary == nil {
+		writeError(w, http.StatusNotFound, CodeRequestInvalid)
+		return
+	}
+	result, err := h.summary(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, CodeLifecycleFailure)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (h *Handler) authorized(r *http.Request) bool {

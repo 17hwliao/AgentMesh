@@ -65,6 +65,25 @@ func TestAdminRevokeIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestAdminUsageSummaryRequiresAdminTokenAndReturnsAggregate(t *testing.T) {
+	handler := NewHandler(&fakeLifecycle{}, sha256.Sum256([]byte("admin-token")), allowMock)
+	handler.SetUsageSummary(func(context.Context) (any, error) {
+		return map[string]int{"pending_outbox": 2, "projections": 1}, nil
+	})
+	request := httptest.NewRequest(http.MethodGet, "/admin/usage/outbox-summary", nil)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status=%d", response.Code)
+	}
+	request.Header.Set("Authorization", "Bearer admin-token")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "{\"pending_outbox\":2,\"projections\":1}\n" {
+		t.Fatalf("status=%d body=%q", response.Code, response.Body.String())
+	}
+}
+
 type fakeLifecycle struct {
 	calls       int
 	revocations int

@@ -42,7 +42,7 @@ try {
     Remove-Item Env:AGENTMESH_AUTH_STORE, Env:AGENTMESH_AUTH_MYSQL_DSN, Env:AGENTMESH_ADMIN_TOKEN -ErrorAction SilentlyContinue
     Remove-Item Env:AGENTMESH_QUOTA_MODE, Env:AGENTMESH_QUOTA_MYSQL_DSN, Env:AGENTMESH_QUOTA_REDIS_URL -ErrorAction SilentlyContinue
 
-    & go build -o $apiBinary ./cmd/api
+    & go build -buildvcs=false -o $apiBinary ./cmd/api
     if ($LASTEXITCODE -ne 0) { throw 'provider verification gateway build failed' }
     $process = Start-Process -FilePath $apiBinary -ArgumentList @('--addr', '127.0.0.1:18083', '--providers', $providerSelection) -WorkingDirectory (Get-Location).Path -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     $ready = $false

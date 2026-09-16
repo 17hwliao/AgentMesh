@@ -32,7 +32,10 @@ func New(config Config, client *http.Client) (*Adapter, error) {
 		return nil, errors.New("invalid Ollama configuration")
 	}
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		// Local models can spend tens of seconds loading or evaluating a larger
+		// evidence prompt. The gateway still propagates caller cancellation; this
+		// is only the upstream safety ceiling, not a request that cannot cancel.
+		client = &http.Client{Timeout: 90 * time.Second}
 	}
 	return &Adapter{baseURL: baseURL, model: config.Model, client: client}, nil
 }
