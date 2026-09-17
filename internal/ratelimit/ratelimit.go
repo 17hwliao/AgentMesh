@@ -151,6 +151,7 @@ func OpenConfiguredRuntime(lookup func(string) string) (Runtime, error) {
 	if lookup == nil {
 		return Runtime{}, &ConfigurationError{Code: CodeConfiguration}
 	}
+	//读取环境变量中的store值实现选择当前的限流策略
 	store := strings.TrimSpace(lookup(EnvironmentStore))
 	if store == "" || store == "memory" {
 		gate, err := OpenConfigured(lookup)
