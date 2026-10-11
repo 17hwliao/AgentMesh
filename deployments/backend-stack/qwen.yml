@@ -1,9 +1,6 @@
 # Fresh production installation: docker compose -f compose.yml -f qwen.yml ...
 # Do not combine with acceptance.yml or extensions.yml. Requires Compose 2.24.4+.
 x-qwen-env: &qwen-env
-  ARK_API_KEY_FILE: !reset null
-  ARK_BASE_URL: !reset null
-  ARK_MODEL: !reset null
   COMPATIBLE_BASE_URL: "${COMPATIBLE_BASE_URL:?configure account Qwen Base URL}"
   COMPATIBLE_API_KEY_FILE: /run/secrets/compatible_key
   COMPATIBLE_MODELS: "${COMPATIBLE_MODELS:?configure Qwen aliases}"
@@ -21,18 +18,30 @@ services:
   gateway:
     image: local/agentmesh-backend:qwen
     command: [api, --addr, "0.0.0.0:18080", --allow-container-listen, --providers, compatible]
-    environment: *qwen-env
+    # Keep reset tags directly on service fields: Compose 2.x does not reliably
+    # apply reset tags inherited through YAML aliases/merge keys.
+    environment:
+      <<: *qwen-env
+      ARK_API_KEY_FILE: !reset null
+      ARK_BASE_URL: !reset null
+      ARK_MODEL: !reset null
     secrets: !override [am_dsn, redis_url, admin_token, compatible_key]
   usage-relay:
     image: local/agentmesh-backend:qwen
     environment:
       <<: *qwen-env
+      ARK_API_KEY_FILE: !reset null
+      ARK_BASE_URL: !reset null
+      ARK_MODEL: !reset null
       COMPATIBLE_API_KEY_FILE: ""
     secrets: !override [am_dsn, redis_url, admin_token]
   usage-worker:
     image: local/agentmesh-backend:qwen
     environment:
       <<: *qwen-env
+      ARK_API_KEY_FILE: !reset null
+      ARK_BASE_URL: !reset null
+      ARK_MODEL: !reset null
       COMPATIBLE_API_KEY_FILE: ""
     secrets: !override [am_dsn, redis_url, admin_token]
   sentinel-api:

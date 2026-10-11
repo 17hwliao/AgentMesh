@@ -1,5 +1,6 @@
 """Isolated configuration regression. No model calls or operational mutations."""
 from pathlib import Path
+import argparse
 import hashlib
 import json
 import shutil
@@ -8,6 +9,10 @@ import sys
 import tempfile
 
 root = Path(__file__).resolve().parent
+parser = argparse.ArgumentParser()
+parser.add_argument("--compose-binary", help="optional standalone Compose binary for version compatibility tests")
+args = parser.parse_args()
+compose = [args.compose_binary] if args.compose_binary else ["docker", "compose"]
 
 def operational_hashes():
     files = [root / ".env", *(root / "secrets").glob("*")]
@@ -34,7 +39,7 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
     folder = prepare("qwen", qwen)
     assert not (folder / "secrets/ark_key").exists()
     assert (folder / "secrets/compatible_key").read_text().strip() == "fixture-private-key"
-    command = ["docker", "compose", "--project-directory", str(folder), "--env-file", str(folder / ".env"), "-f", str(folder / "compose.yml"), "-f", str(folder / "qwen.yml")]
+    command = [*compose, "--project-directory", str(folder), "--env-file", str(folder / ".env"), "-f", str(folder / "compose.yml"), "-f", str(folder / "qwen.yml")]
 
     def configuration(extra=()):
         result = subprocess.run([*command, *extra, "config", "--format", "json"], capture_output=True, text=True)
@@ -53,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
         service = services[name]
         targets = [item.get("target", item["source"]) for item in service["secrets"]]
         mounts = {target if target.startswith("/") else "/run/secrets/" + target for target in targets}
-        assert "ARK_API_KEY_FILE" not in service["environment"]
+        for variable in ["ARK_API_KEY_FILE", "ARK_BASE_URL", "ARK_MODEL"]:
+            assert variable not in service["environment"], name + " retained inactive provider configuration: " + variable
         assert "ark_key" not in {item["source"] for item in service["secrets"]}
         for variable, value in service["environment"].items():
             if variable.endswith("_FILE") and value:
@@ -70,7 +76,7 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
     assert saved == {p.name: p.read_bytes() for p in (folder / "secrets").iterdir()}
     key.write_text("fixture-private-key\n", encoding="utf-8")
     legacy = prepare("ark", [*common, "--ark-key-file", str(key), "--ark-model", "endpoint-id"])
-    result = subprocess.run(["docker", "compose", "--project-directory", str(legacy), "--env-file", str(legacy / ".env"), "-f", str(legacy / "compose.yml"), "config", "--format", "json"], capture_output=True, text=True)
+    result = subprocess.run([*compose, "--project-directory", str(legacy), "--env-file", str(legacy / ".env"), "-f", str(legacy / "compose.yml"), "config", "--format", "json"], capture_output=True, text=True)
     assert result.returncode == 0, "legacy Compose configuration failed"
     assert json.loads(result.stdout)["services"]["gateway"]["command"][-1] == "ark,ollama"
     original = (legacy / ".env").read_bytes()
