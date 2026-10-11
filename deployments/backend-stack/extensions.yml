@@ -1,0 +1,254 @@
+# Explicit optional override: docker compose -f compose.yml -f extensions.yml
+# --profile extensions ... . No gRPC/ES/PG host ports or payment credentials.
+x-executor: &executor
+  image: local/sql-sentinel-backend:reviewed
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [private,egress]
+  pids_limit: 128
+  mem_limit: 512m
+  stop_grace_period: 35s
+  logging: {driver: json-file, options: {max-size: "10m",max-file: "3"}}
+services:
+  prometheus:
+    volumes: !override [./prometheus-extended.yml:/etc/prometheus/prometheus.yml:ro,./alerts.yml:/etc/prometheus/alerts.yml:ro,prometheus-data:/prometheus]
+  otel-collector:
+    volumes: !override [./otel-collector-extended.yml:/etc/otelcol/config.yml:ro]
+  jaeger:
+    <<: *executor
+    profiles: [extensions]
+    image: jaegertracing/jaeger:2.22.0@sha256:836b967b5abcf1f7758066aa6b348619267a2f1459f72d472840570f9bd88a17
+    command: [--config,/etc/jaeger/config.yml]
+    networks: [private]
+    mem_limit: 512m
+    volumes: [./jaeger.yml:/etc/jaeger/config.yml:ro,jaeger-data:/data]
+    depends_on: {jaeger-init: {condition: service_completed_successfully}}
+  jaeger-init:
+    image: alpine:3.21
+    profiles: [extensions]
+    restart: "no"
+    networks: [private]
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: ["no-new-privileges:true"]
+    command: [sh,-ec,'chown 10001:10001 /data']
+    volumes: [jaeger-data:/data]
+  alertmanager:
+    <<: *executor
+    profiles: [extensions]
+    image: prom/alertmanager:v0.34.1@sha256:e9733bafb1bdef9b00e25a21f8f99dc26a22224bf16641ad754d1649f4c3357a
+    command: [--config.file=/etc/alertmanager/config.yml,--storage.path=/alertmanager,--data.retention=120h,--cluster.listen-address=,--silences.max-silences=1000]
+    networks: [private]
+    mem_limit: 128m
+    volumes: [./alertmanager.yml:/etc/alertmanager/config.yml:ro,alertmanager-data:/alertmanager]
+  runner-grants:
+    <<: *executor
+    profiles: [extensions]
+    image: mysql:8.4.11
+    user: "10001:10001"
+    restart: "no"
+    mem_limit: 128m
+    entrypoint: [sh,/runner-grants.sh]
+    volumes: [./init-runner.sh:/runner-grants.sh:ro]
+    secrets: [{source: control_root,target: mysql_root},runner_password]
+    depends_on: {control: {condition: service_healthy},am-migrate: {condition: service_completed_successfully}}
+  gateway:
+    command: ["api","--addr","0.0.0.0:18080","--allow-container-listen","--providers","ark,ollama,compatible"]
+    secrets: !override [am_dsn,redis_url,admin_token,billing_catalog,grpc_ca,gateway_cert,gateway_key,am_grpc_token]
+    environment:
+      ARK_API_KEY_FILE: ""
+      AGENTMESH_RUNNER_GRPC_TARGET: model-runner:50051
+      AGENTMESH_GRPC_CA: /run/secrets/grpc_ca
+      AGENTMESH_GRPC_CERT: /run/secrets/gateway_cert
+      AGENTMESH_GRPC_KEY: /run/secrets/gateway_key
+      AGENTMESH_GRPC_SERVER_NAME: model-runner
+      AGENTMESH_GRPC_TOKEN_FILE: /run/secrets/am_grpc_token
+      COMPATIBLE_MODELS: '${COMPATIBLE_MODELS:-{"domestic-chat":"qwen-plus"}}'
+      AGENTMESH_BILLING_CATALOG_FILE: /run/secrets/billing_catalog
+      AGENTMESH_SEMANTIC_CACHE: "true"
+      AGENTMESH_CACHE_VERSION: "${SEMANTIC_CACHE_VERSION:-release-v1}"
+    depends_on: {model-runner: {condition: service_healthy}}
+  model-runner:
+    <<: *executor
+    image: local/agentmesh-backend:reviewed
+    profiles: [extensions]
+    command: [model-runner]
+    mem_limit: 256m
+    secrets: [runner_dsn,ark_key,compatible_key,grpc_ca,model_runner_cert,model_runner_key,am_grpc_token]
+    environment:
+      AGENTMESH_RUNNER_PROVIDERS: ark,ollama,compatible
+      AGENTMESH_AUTH_MYSQL_DSN_FILE: /run/secrets/runner_dsn
+      AGENTMESH_RUNNER_LISTEN: "0.0.0.0:50051"
+      AGENTMESH_GRPC_CA: /run/secrets/grpc_ca
+      AGENTMESH_GRPC_CERT: /run/secrets/model_runner_cert
+      AGENTMESH_GRPC_KEY: /run/secrets/model_runner_key
+      AGENTMESH_GRPC_SERVER_NAME: model-runner
+      AGENTMESH_GRPC_TOKEN_FILE: /run/secrets/am_grpc_token
+      ARK_API_KEY_FILE: /run/secrets/ark_key
+      ARK_BASE_URL: "${ARK_BASE_URL}"
+      ARK_MODEL: "${ARK_MODEL}"
+      OLLAMA_BASE_URL: "${OLLAMA_BASE_URL}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL}"
+      COMPATIBLE_BASE_URL: "${COMPATIBLE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}"
+      COMPATIBLE_MODELS: '${COMPATIBLE_MODELS:-{"domestic-chat":"qwen-plus"}}'
+      COMPATIBLE_DISABLE_THINKING: "true"
+      COMPATIBLE_USE_MAX_COMPLETION_TOKENS: "${COMPATIBLE_USE_MAX_COMPLETION_TOKENS:-false}"
+      COMPATIBLE_API_KEY_FILE: /run/secrets/compatible_key
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on: {runner-grants: {condition: service_completed_successfully}}
+    healthcheck:
+      test: [CMD,grpc-probe,--target,model-runner:50051,--prefix,AGENTMESH_GRPC]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+  sentinel-worker:
+    secrets: !override [ss_dsn,grpc_ca,worker_cert,worker_key,ss_grpc_token]
+    environment:
+      SQL_SENTINEL_BASELINE_DSN_FILE: ""
+      SQL_SENTINEL_CANDIDATE_DSN_FILE: ""
+      SQL_SENTINEL_API_TOKEN_FILE: ""
+      SQL_SENTINEL_JWT_KEY_FILE: ""
+      OPENAI_API_KEY_FILE: ""
+      GITHUB_WEBHOOK_SECRET_FILE: ""
+      GITHUB_TOKEN_FILE: ""
+      SQL_SENTINEL_VERIFIER_GRPC_TARGET: verifier:50052
+      SQL_SENTINEL_GRPC_CA: /run/secrets/grpc_ca
+      SQL_SENTINEL_GRPC_CERT: /run/secrets/worker_cert
+      SQL_SENTINEL_GRPC_KEY: /run/secrets/worker_key
+      SQL_SENTINEL_GRPC_SERVER_NAME: verifier
+      SQL_SENTINEL_GRPC_TOKEN_FILE: /run/secrets/ss_grpc_token
+    depends_on: {verifier: {condition: service_healthy}}
+  verifier:
+    <<: *executor
+    profiles: [extensions]
+    command: [verifier]
+    secrets: [ss_dsn,baseline_dsn,candidate_dsn,bootstrap_key,grpc_ca,verifier_cert,verifier_key,ss_grpc_token,es_api_key]
+    environment:
+      SQL_SENTINEL_KAFKA_MYSQL_DSN_FILE: /run/secrets/ss_dsn
+      SQL_SENTINEL_BASELINE_DSN_FILE: /run/secrets/baseline_dsn
+      SQL_SENTINEL_CANDIDATE_DSN_FILE: /run/secrets/candidate_dsn
+      SQL_SENTINEL_SHADOW_TABLES: "${SQL_SENTINEL_SHADOW_TABLES:-orders}"
+      EINO_BASE_URL: http://gateway:18080/v1
+      EINO_MODEL: sql-review
+      OPENAI_API_KEY_FILE: /run/secrets/bootstrap_key
+      SQL_SENTINEL_VERIFIER_LISTEN: "0.0.0.0:50052"
+      SQL_SENTINEL_GRPC_CA: /run/secrets/grpc_ca
+      SQL_SENTINEL_GRPC_CERT: /run/secrets/verifier_cert
+      SQL_SENTINEL_GRPC_KEY: /run/secrets/verifier_key
+      SQL_SENTINEL_GRPC_SERVER_NAME: verifier
+      SQL_SENTINEL_GRPC_TOKEN_FILE: /run/secrets/ss_grpc_token
+      SQL_SENTINEL_ES_URL: https://elasticsearch:9200
+      SQL_SENTINEL_ES_API_KEY_FILE: /run/secrets/es_api_key
+      SQL_SENTINEL_ES_CA: /run/secrets/grpc_ca
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+    depends_on: {ss-migrate: {condition: service_completed_successfully},baseline: {condition: service_healthy},candidate: {condition: service_healthy}}
+    healthcheck:
+      test: [CMD,grpc-probe,--target,verifier:50052,--prefix,SQL_SENTINEL_GRPC]
+      interval: 10s
+      timeout: 4s
+      retries: 3
+  sentinel-api:
+    secrets: [es_api_key,grpc_ca]
+    environment:
+      SQL_SENTINEL_ES_URL: https://elasticsearch:9200
+      SQL_SENTINEL_ES_API_KEY_FILE: /run/secrets/es_api_key
+      SQL_SENTINEL_ES_CA: /run/secrets/grpc_ca
+  elasticsearch:
+    image: ${ELASTICSEARCH_IMAGE:-docker.elastic.co/elasticsearch/elasticsearch:8.19.23}
+    profiles: [extensions]
+    restart: unless-stopped
+    entrypoint: [/bin/sh,/opt/es-start.sh]
+    networks: [private]
+    mem_limit: 1536m
+    environment:
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      ELASTIC_PASSWORD_FILE: /run/secrets/es_password
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.http.ssl.key: /usr/share/elasticsearch/config/certs/key
+      xpack.security.http.ssl.certificate: /usr/share/elasticsearch/config/certs/cert
+      xpack.security.http.ssl.certificate_authorities: /usr/share/elasticsearch/config/certs/ca
+    secrets:
+      - es_password
+      - {source: elasticsearch_key,target: /usr/share/elasticsearch/config/certs/key}
+      - {source: elasticsearch_cert,target: /usr/share/elasticsearch/config/certs/cert}
+      - {source: grpc_ca,target: /usr/share/elasticsearch/config/certs/ca}
+    volumes: [es-data:/usr/share/elasticsearch/data,./es-start.sh:/opt/es-start.sh:ro]
+    healthcheck:
+      test: [CMD-SHELL,'curl --silent --cacert /usr/share/elasticsearch/config/certs/ca -u elastic:$$(cat /run/secrets/es_password) https://localhost:9200/_cluster/health | grep -q cluster_name']
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 45s
+  postgres:
+    image: postgres:18.6@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
+    profiles: [extensions]
+    restart: unless-stopped
+    networks: [private]
+    mem_limit: 384m
+    environment: {POSTGRES_PASSWORD_FILE: /run/secrets/pg_password}
+    secrets: [pg_password]
+    volumes: [pg-data:/var/lib/postgresql,./init-postgres.sh:/docker-entrypoint-initdb.d/10-compare.sh:ro]
+    healthcheck: {test: [CMD,pg_isready,-U,postgres],interval: 5s,timeout: 3s,retries: 20}
+  pg-compare:
+    <<: *executor
+    profiles: [tools]
+    restart: "no"
+    command: [pg-compare,--ack-isolated,--sql-file,/experiment/query.sql,--out,/experiment/report.json]
+    secrets: [baseline_dsn,pg_dsn]
+    environment:
+      SQL_SENTINEL_PG_MYSQL_DSN_FILE: /run/secrets/baseline_dsn
+      SQL_SENTINEL_POSTGRES_DSN_FILE: /run/secrets/pg_dsn
+    volumes: [./experiments:/experiment]
+    depends_on: {postgres: {condition: service_healthy},baseline: {condition: service_healthy}}
+  write-shadow:
+    image: mysql:8.4.11
+    profiles: [extensions]
+    restart: unless-stopped
+    networks: [private]
+    mem_limit: 512m
+    command: ["--innodb-buffer-pool-size=128M","--max-connections=20","--performance-schema=OFF","--local-infile=OFF"]
+    environment: {MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root}
+    secrets: [{source: write_root,target: mysql_root},write_password]
+    volumes: [write-data:/var/lib/mysql,./init-write.sh:/docker-entrypoint-initdb.d/10-write.sh:ro]
+    healthcheck: {test: [CMD,mysqladmin,ping,-h,127.0.0.1,--silent],interval: 5s,timeout: 3s,retries: 30,start_period: 30s}
+  write-probe:
+    <<: *executor
+    profiles: [tools]
+    restart: "no"
+    command: [write-probe,--ack-isolated,--spec-file,/experiment/index.json,--out,/experiment/write-report.json]
+    secrets: [write_dsn]
+    environment: {SQL_SENTINEL_WRITE_DSN_FILE: /run/secrets/write_dsn}
+    volumes: [./experiments:/experiment]
+    depends_on: {write-shadow: {condition: service_healthy}}
+volumes: {es-data: {},pg-data: {},write-data: {},jaeger-data: {},alertmanager-data: {}}
+secrets:
+  write_root: {file: ./secrets/write_root}
+  write_password: {file: ./secrets/write_password}
+  write_dsn: {file: ./secrets/write_dsn}
+  runner_password: {file: ./secrets/runner_password}
+  runner_dsn: {file: ./secrets/runner_dsn}
+  pg_password: {file: ./secrets/pg_password}
+  pg_dsn: {file: ./secrets/pg_dsn}
+  es_password: {file: ./secrets/es_password}
+  es_api_key: {file: ./secrets/es_api_key}
+  compatible_key: {file: ./secrets/compatible_key}
+  billing_catalog: {file: ./secrets/billing_catalog}
+  grpc_ca: {file: ./secrets/grpc_ca}
+  model_runner_cert: {file: ./secrets/model_runner_cert}
+  model_runner_key: {file: ./secrets/model_runner_key}
+  verifier_cert: {file: ./secrets/verifier_cert}
+  verifier_key: {file: ./secrets/verifier_key}
+  gateway_cert: {file: ./secrets/gateway_cert}
+  gateway_key: {file: ./secrets/gateway_key}
+  worker_cert: {file: ./secrets/worker_cert}
+  worker_key: {file: ./secrets/worker_key}
+  am_grpc_token: {file: ./secrets/am_grpc_token}
+  ss_grpc_token: {file: ./secrets/ss_grpc_token}
+  elasticsearch_cert: {file: ./secrets/elasticsearch_rsa_cert}
+  elasticsearch_key: {file: ./secrets/elasticsearch_rsa_key}

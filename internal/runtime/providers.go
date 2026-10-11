@@ -6,9 +6,12 @@ import (
 	"errors"
 	"strings"
 
+	"agentmesh/internal/modelrpc"
 	"agentmesh/internal/provider"
 	"agentmesh/internal/provider/ark"
 	"agentmesh/internal/provider/ollama"
+	"agentmesh/internal/providerconfig"
+	"agentmesh/internal/securegrpc"
 )
 
 const (
@@ -35,18 +38,43 @@ func Build(orderRaw string, lookup func(string) string) ([]provider.Provider, er
 		fallback := provider.NewMock(provider.MockConfig{Name: "mock-fallback", Chunks: []string{"mock response"}, FailAfterChunks: -1})
 		return []provider.Provider{primary, fallback}, nil
 	}
+	bindings, err := providerconfig.Bindings(order, lookup)
+	if err != nil {
+		if errors.Is(err, providerconfig.ErrMissing) {
+			return nil, &ConfigurationError{CodeProviderConfigurationMissing}
+		}
+		return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
+	}
+	if target := lookup("AGENTMESH_RUNNER_GRPC_TARGET"); target != "" {
+		conn, e := securegrpc.Dial(target, securegrpc.Env(lookup, "AGENTMESH_GRPC"))
+		if e != nil {
+			return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
+		}
+		var result []provider.Provider
+		for _, binding := range bindings {
+			result = append(result, modelrpc.NewAdapter(conn, binding.Name, binding.Models, binding.Model))
+		}
+		return result, nil
+	}
 
 	providers := make([]provider.Provider, 0, len(order))
-	for _, name := range order {
+	for _, binding := range bindings {
+		name := binding.Name
 		switch name {
+		case "compatible":
+			adapter, err := ark.New(ark.Config{BaseURL: lookup("COMPATIBLE_BASE_URL"), APIKey: lookup("COMPATIBLE_API_KEY"), Name: "compatible", Models: binding.Models, DisableThinking: binding.DisableThinking, UseMaxCompletionTokens: binding.UseMaxCompletionTokens}, nil)
+			if err != nil {
+				return nil, configurationError(lookup("COMPATIBLE_BASE_URL"), lookup("COMPATIBLE_API_KEY"))
+			}
+			providers = append(providers, adapter)
 		case "ark":
-			adapter, err := ark.New(ark.Config{BaseURL: lookup("ARK_BASE_URL"), Model: lookup("ARK_MODEL"), APIKey: lookup("ARK_API_KEY")}, nil)
+			adapter, err := ark.New(ark.Config{BaseURL: lookup("ARK_BASE_URL"), Model: binding.Model, APIKey: lookup("ARK_API_KEY")}, nil)
 			if err != nil {
 				return nil, configurationError(lookup("ARK_BASE_URL"), lookup("ARK_MODEL"), lookup("ARK_API_KEY"))
 			}
 			providers = append(providers, adapter)
 		case "ollama":
-			adapter, err := ollama.New(ollama.Config{BaseURL: lookup("OLLAMA_BASE_URL"), Model: lookup("OLLAMA_MODEL")}, nil)
+			adapter, err := ollama.New(ollama.Config{BaseURL: lookup("OLLAMA_BASE_URL"), Model: binding.Model}, nil)
 			if err != nil {
 				return nil, configurationError(lookup("OLLAMA_BASE_URL"), lookup("OLLAMA_MODEL"))
 			}
@@ -70,7 +98,7 @@ func parseOrder(raw string) ([]string, error) {
 	seen := make(map[string]struct{}, len(parts))
 	for index, part := range parts {
 		name := strings.TrimSpace(part)
-		if name == "" || name == "mock" || (name != "ark" && name != "ollama") {
+		if name == "" || name == "mock" || (name != "ark" && name != "ollama" && name != "compatible") {
 			return nil, &ConfigurationError{Code: CodeProviderSelectionInvalid}
 		}
 		if _, exists := seen[name]; exists {

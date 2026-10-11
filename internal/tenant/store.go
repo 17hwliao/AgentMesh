@@ -54,7 +54,7 @@ func ValidDefinition(value Tenant) bool {
 		}
 		seen := map[string]bool{}
 		for _, name := range route {
-			if seen[name] || (name != "mock" && name != "ark" && name != "ollama") {
+			if seen[name] || (name != "mock" && name != "ark" && name != "ollama" && name != "compatible") {
 				return false
 			}
 			seen[name] = true

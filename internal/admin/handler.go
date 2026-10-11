@@ -29,6 +29,13 @@ type Handler struct {
 	tokenHash [sha256.Size]byte
 	routeOK   func([]string) bool
 	summary   func(context.Context) (any, error)
+	provision func(context.Context, string) error
+	grant     func(context.Context, string, string, uint64) error
+}
+
+func (h *Handler) SetQuota(provision func(context.Context, string) error, grant func(context.Context, string, string, uint64) error) {
+	h.provision = provision
+	h.grant = grant
 }
 
 func NewHandler(lifecycle tenant.Lifecycle, tokenHash [sha256.Size]byte, routeOK func([]string) bool) *Handler {
@@ -51,6 +58,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/admin/quota/grants":
+		var input struct {
+			TenantID string `json:"tenant_id"`
+			GrantID  string `json:"grant_id"`
+			Units    uint64 `json:"units"`
+		}
+		if !decodeStrict(w, r, &input) {
+			return
+		}
+		if h.grant == nil {
+			writeError(w, 503, "quota_unavailable")
+			return
+		}
+		if err := h.grant(r.Context(), input.TenantID, input.GrantID, input.Units); err != nil {
+			writeError(w, 409, "quota_grant_failed")
+			return
+		}
+		writeJSON(w, 200, map[string]string{"status": "granted"})
 	case r.Method == http.MethodPost && r.URL.Path == "/admin/tenants":
 		h.createTenant(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/admin/api-keys":
@@ -105,9 +130,23 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	err := h.lifecycle.CreateTenant(r.Context(), tenant.Tenant{ID: request.TenantID, Enabled: true, ModelRoutes: request.ModelRoutes})
+	if errors.Is(err, tenant.ErrTenantExists) && h.provision != nil {
+		// Creation can be retried after identity committed but quota provisioning
+		// failed. The existing identity is never changed by this path.
+		if err := h.provision(r.Context(), request.TenantID); err == nil {
+			writeJSON(w, 200, map[string]string{"tenant_id": request.TenantID})
+			return
+		}
+	}
 	if err != nil {
 		writeLifecycleError(w, err)
 		return
+	}
+	if h.provision != nil {
+		if err := h.provision(r.Context(), request.TenantID); err != nil {
+			writeError(w, 503, "quota_provision_failed")
+			return
+		}
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"tenant_id": request.TenantID})
 }

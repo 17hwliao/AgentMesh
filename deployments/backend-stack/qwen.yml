@@ -1,0 +1,45 @@
+# Fresh production installation: docker compose -f compose.yml -f qwen.yml ...
+# Do not combine with acceptance.yml or extensions.yml. Requires Compose 2.24.4+.
+x-qwen-env: &qwen-env
+  ARK_API_KEY_FILE: !reset null
+  ARK_BASE_URL: !reset null
+  ARK_MODEL: !reset null
+  COMPATIBLE_BASE_URL: "${COMPATIBLE_BASE_URL:?configure account Qwen Base URL}"
+  COMPATIBLE_API_KEY_FILE: /run/secrets/compatible_key
+  COMPATIBLE_MODELS: "${COMPATIBLE_MODELS:?configure Qwen aliases}"
+  COMPATIBLE_DISABLE_THINKING: "${COMPATIBLE_DISABLE_THINKING:-true}"
+  COMPATIBLE_USE_MAX_COMPLETION_TOKENS: "${COMPATIBLE_USE_MAX_COMPLETION_TOKENS:-false}"
+services:
+  am-migrate:
+    image: local/agentmesh-backend:qwen
+    environment:
+      AGENTMESH_BOOTSTRAP_MODEL_ROUTES: '{"sql-review":["compatible"],"domestic-chat":["compatible"],"embedding":["ollama"]}'
+  ss-migrate:
+    image: local/sql-sentinel-backend:qwen
+  seed:
+    image: local/sql-sentinel-backend:qwen
+  gateway:
+    image: local/agentmesh-backend:qwen
+    command: [api, --addr, "0.0.0.0:18080", --allow-container-listen, --providers, compatible]
+    environment: *qwen-env
+    secrets: !override [am_dsn, redis_url, admin_token, compatible_key]
+  usage-relay:
+    image: local/agentmesh-backend:qwen
+    environment:
+      <<: *qwen-env
+      COMPATIBLE_API_KEY_FILE: ""
+    secrets: !override [am_dsn, redis_url, admin_token]
+  usage-worker:
+    image: local/agentmesh-backend:qwen
+    environment:
+      <<: *qwen-env
+      COMPATIBLE_API_KEY_FILE: ""
+    secrets: !override [am_dsn, redis_url, admin_token]
+  sentinel-api:
+    image: local/sql-sentinel-backend:qwen
+  sentinel-relay:
+    image: local/sql-sentinel-backend:qwen
+  sentinel-worker:
+    image: local/sql-sentinel-backend:qwen
+secrets:
+  compatible_key: {file: ./secrets/compatible_key}

@@ -1,0 +1,27 @@
+# Single-node trace persistence. Traces contain no SQL/prompt/body attributes.
+extensions:
+  jaeger_storage:
+    backends:
+      local:
+        badger:
+          directories: {keys: /data/keys, values: /data/values}
+          ephemeral: false
+          ttl: {spans: 48h}
+  jaeger_query:
+    storage: {traces: local}
+receivers:
+  otlp:
+    protocols:
+      grpc: {endpoint: '127.0.0.1:4317'}
+      http: {endpoint: '0.0.0.0:4318'}
+processors:
+  batch: {timeout: 2s, send_batch_size: 128}
+exporters:
+  jaeger_storage_exporter: {trace_storage: local}
+service:
+  extensions: [jaeger_storage,jaeger_query]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [jaeger_storage_exporter]

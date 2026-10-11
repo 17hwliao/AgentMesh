@@ -1,4 +1,12 @@
+> **2026-10-10 后端版本**：核心能力见 [后端扩展说明](docs/backend-expansion.md)，第三Provider、人民币余额/账单、语义缓存和独立mTLS模型执行器见 [新增运行契约](docs/backend-roadmap.md)。以下阶段记录保留历史口径；真实模型/云/支付尚需环境联调。
+
 # AgentMesh：多租户 LLM 网关与 Agent Runtime
+
+联合部署入口：[可导出的 Compose/千问/验收模板](deployments/backend-stack/EXPORT.md)。同级克隆两个仓库后运行 `python scripts/export-backend-stack.py --out ../deploy`，再按手册生成自己的私有配置。
+
+> **2026-10-11 本地改进**：共用 SSE、Provider 配置校验、余额状态验证与流式资源基线见 [本地改进契约](docs/local-improvements.md)。本轮源码更新不替换既有发布包。
+
+> **2026-10 后端发布状态**：当前实现包含 MySQL 租户与密钥、Redis 限流和预留配额、持久充值记录、取消结算/恢复、Kafka 用量投影、Ark/Ollama 流式聊天及受预算保护的 embeddings。入口为 `cmd/api`，生产镜像还包含迁移、用量 relay/worker、离线钱包恢复命令。见 [当前后端契约](docs/backend-release.md)。下文编号切片是历史开发记录，不能作为当前能力清单；真实云域名和模型验收需执行联合发布包的 `deploy/commission.py`。
 
 > 文档导航：[docs/README.md](docs/README.md)。该导航保留并分类现有规格、决策与本机证据，不替代原始文档。
 

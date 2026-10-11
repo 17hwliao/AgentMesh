@@ -36,6 +36,9 @@ func run(arguments []string, output io.Writer, now func() time.Time) error {
 	flags.IntVar(&config.Concurrency, "concurrency", config.Concurrency, "concurrent loopback requests")
 	flags.IntVar(&config.RateRequests, "rate-requests", config.RateRequests, "concurrent rate-limit requests")
 	flags.IntVar(&config.RateBurst, "rate-burst", config.RateBurst, "rate-limit burst")
+	flags.IntVar(&config.StreamChunks, "stream-chunks", 0, "bounded mock stream chunks")
+	flags.IntVar(&config.ChunkBytes, "chunk-bytes", 0, "bytes per mock chunk")
+	flags.IntVar(&config.ReadDelayMS, "read-delay-ms", 0, "per-event consumption delay, 0..20 ms")
 	path := flags.String("out", defaultOutputPath(now().UTC()), "private JSON output path")
 	if err := flags.Parse(arguments); err != nil {
 		return errors.New("benchmark_arguments_invalid")

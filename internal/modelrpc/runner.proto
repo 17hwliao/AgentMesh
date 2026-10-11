@@ -1,0 +1,8 @@
+syntax = "proto3";
+package agentmesh.runner.v1;
+option go_package = "agentmesh/internal/modelrpc";
+message Request {string tenant_id=1;string provider=2;bytes chat_json=3;string expected_upstream_model=4;}
+message Chunk {bytes chunk_json=1;bool completed=2;string upstream_model=3;}
+message HealthRequest {string provider=1;string model_alias=2;}
+message HealthResponse {bool healthy=1;string upstream_model=2;}
+service ModelRunner {rpc Chat(Request) returns(stream Chunk);rpc Health(HealthRequest) returns(HealthResponse);}

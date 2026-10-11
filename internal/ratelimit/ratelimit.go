@@ -139,8 +139,9 @@ func (g *TokenBucket) Admit(_ context.Context, tenantID string) Decision {
 // Runtime owns optional external limiter resources. A nil Gate means limiting
 // is intentionally disabled.
 type Runtime struct {
-	Gate  Gate
-	Close func() error
+	Gate   Gate
+	Close  func() error
+	Health func(context.Context) error
 }
 
 // OpenConfiguredRuntime selects a local or Redis-backed limiter. Existing
@@ -170,6 +171,11 @@ func OpenConfiguredRuntime(lookup func(string) string) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, &ConfigurationError{Code: CodeConfiguration}
 	}
+	options.ContextTimeoutEnabled = true
+	options.DialTimeout = 500 * time.Millisecond
+	options.ReadTimeout = 500 * time.Millisecond
+	options.WriteTimeout = 500 * time.Millisecond
+	options.MaxRetries = -1
 	client := redis.NewClient(options)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -182,7 +188,7 @@ func OpenConfiguredRuntime(lookup func(string) string) (Runtime, error) {
 		_ = client.Close()
 		return Runtime{}, err
 	}
-	return Runtime{Gate: gate, Close: client.Close}, nil
+	return Runtime{Gate: gate, Close: client.Close, Health: func(ctx context.Context) error { return client.Ping(ctx).Err() }}, nil
 }
 
 const redisBucketPrefix = "agentmesh:rate_limit:v1:"
@@ -255,6 +261,8 @@ func (g *RedisTokenBucket) Admit(ctx context.Context, tenantID string) Decision 
 	if g == nil || g.evaluator == nil || tenantID == "" || ctx == nil {
 		return Decision{RetryAfter: time.Second}
 	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
 	result, err := g.evaluator.Eval(ctx, redisAdmitLua, []string{redisBucketPrefix + tenantID}, g.config.Burst, float64(g.config.PerMinute)/60, int(g.config.IdleTTL.Seconds()))
 	if err != nil {
 		return Decision{RetryAfter: time.Second}

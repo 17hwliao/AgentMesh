@@ -58,13 +58,14 @@ func OpenConfiguredCoordinator(lookup func(string) string) (StreamGate, func(), 
 		cleanup()
 		return nil, func() {}, domainError(CodeQuotaConfigurationInvalid)
 	}
+	options.ContextTimeoutEnabled = true
+	options.DialTimeout = time.Second
+	options.ReadTimeout = time.Second
+	options.WriteTimeout = time.Second
+	options.MaxRetries = 1
 	client := redis.NewClient(options)
 	cleanup = func() { _ = client.Close(); _ = db.Close() }
 	if err := client.Ping(ctx).Err(); err != nil {
-		cleanup()
-		return nil, func() {}, domainError(quotaUnavailableCode)
-	}
-	if _, err := client.SetNX(ctx, balanceKey(tenantID), quotaUnits, 0).Result(); err != nil {
 		cleanup()
 		return nil, func() {}, domainError(quotaUnavailableCode)
 	}
@@ -73,12 +74,17 @@ func OpenConfiguredCoordinator(lookup func(string) string) (StreamGate, func(), 
 		cleanup()
 		return nil, func() {}, err
 	}
-	return coordinator, cleanup, nil
+	configured := &Runtime{Coordinator: coordinator, DB: db, Redis: client, DefaultUnits: quotaUnits}
+	if err := configured.Provision(ctx, tenantID); err != nil {
+		cleanup()
+		return nil, func() {}, err
+	}
+	return configured, cleanup, nil
 }
 
 func positiveUnits(value string) (uint64, bool) {
 	units, err := strconv.ParseUint(strings.TrimSpace(value), 10, 64)
-	return units, err == nil && units > 0
+	return units, err == nil && units > 0 && units <= 1<<52
 }
 
 const quotaUnavailableCode = "quota_unavailable"

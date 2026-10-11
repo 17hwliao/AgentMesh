@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"agentmesh/internal/tenant"
 )
@@ -46,6 +47,8 @@ func Bootstrap(lookup func(string) string) (*tenant.MemoryStore, error) {
 	return tenant.NewMemory([]tenant.Tenant{{ID: id, Enabled: true, ModelRoutes: routes}}, []tenant.APIKeyRecord{{Prefix: prefix, Hash: digest, TenantID: id, Enabled: true}}), nil
 }
 func Authenticate(store tenant.Store, next http.Handler) http.Handler {
+	// Bound unauthenticated database work before tenant-level admission exists.
+	lookups := make(chan struct{}, 64)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.Header.Get("Authorization"))
 		parts := strings.Fields(raw)
@@ -58,7 +61,21 @@ func Authenticate(store tenant.Store, next http.Handler) http.Handler {
 			reject(w)
 			return
 		}
-		t, ok := store.Authenticate(r.Context(), key[:8], sha256.Sum256([]byte(key)))
+		select {
+		case lookups <- struct{}{}:
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "auth_busy"}})
+			return
+		}
+		t, ok := func() (tenant.Tenant, bool) {
+			defer func() { <-lookups }()
+			check, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			return store.Authenticate(check, key[:8], sha256.Sum256([]byte(key)))
+		}()
 		if !ok {
 			reject(w)
 			return

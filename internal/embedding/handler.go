@@ -2,17 +2,23 @@ package embedding
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
 
 	"agentmesh/internal/auth"
+	"agentmesh/internal/observability"
+	chatprovider "agentmesh/internal/provider"
+	"agentmesh/internal/reservation"
+	"agentmesh/internal/router"
 	"agentmesh/internal/tenant"
 )
 
@@ -22,6 +28,13 @@ type Handler struct {
 	store     tenant.Store
 	providers map[string]Provider
 	now       func() time.Time
+	quota     reservation.StreamGate
+	recorder  *observability.Recorder
+}
+
+func (h *Handler) SetResources(quota reservation.StreamGate, recorder *observability.Recorder) {
+	h.quota = quota
+	h.recorder = recorder
 }
 
 func NewHandler(store tenant.Store, providers []Provider) (*Handler, error) {
@@ -89,22 +102,94 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	traceID := newTraceID()
+	var trace *observability.Session
+	if h.recorder != nil {
+		trace = h.recorder.Start(tenantID, input.Model)
+		traceID = trace.TraceID()
+	}
+	resultCode := "embedding_provider_unavailable"
+	defer func() {
+		if trace != nil {
+			trace.Complete(resultCode, r.Context().Err() != nil)
+		}
+	}()
 	w.Header().Set("X-AgentMesh-Trace-ID", traceID)
+	var session reservation.StreamSession
+	if h.quota != nil {
+		messages := make([]chatprovider.Message, len(input.Inputs))
+		for i, text := range input.Inputs {
+			messages[i] = chatprovider.Message{Role: "user", Content: text}
+		}
+		session, err = h.quota.Begin(r.Context(), tenantID, input.Model, messages)
+		if err != nil {
+			status := http.StatusServiceUnavailable
+			code := "quota_unavailable"
+			if reservation.Code(err) == "quota_exhausted" {
+				status = 429
+				code = "quota_exhausted"
+			}
+			writeError(w, status, code)
+			return
+		}
+		defer func() {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 5*time.Second)
+			defer cancel()
+			_ = session.Complete(cleanup, resultCode, r.Context().Err() != nil)
+		}()
+		if err = session.BeforeAttempt(r.Context(), provider.Name(), chatprovider.ChatRequest{Model: input.Model, Messages: messages}); err != nil {
+			if reservation.Code(err) == "quota_exhausted" {
+				writeError(w, 429, "quota_exhausted")
+			} else {
+				writeError(w, 503, "quota_unavailable")
+			}
+			return
+		}
+	}
 	started := h.now()
+	if trace != nil {
+		trace.Observe(router.AttemptEvent{Kind: router.AttemptStarted, Provider: provider.Name()})
+	}
 	vectors, err := provider.Embed(r.Context(), input.Model, input.Inputs)
 	if err != nil {
+		if trace != nil {
+			trace.Observe(router.AttemptEvent{Kind: router.AttemptFinished, Provider: provider.Name(), Outcome: "failed"})
+		}
+		if session != nil {
+			_ = session.FinishAttempt(r.Context(), provider.Name(), "failed")
+		}
 		writeError(w, providerStatus(err), providerCode(err))
 		return
 	}
 	if err := validateVectorsForRequest(vectors, len(input.Inputs)); err != nil {
-		writeError(w, http.StatusBadGateway, "embedding_provider_protocol_error")
+		if session != nil {
+			_ = session.FinishAttempt(r.Context(), provider.Name(), "protocol_error")
+		}
+		if trace != nil {
+			trace.Observe(router.AttemptEvent{Kind: router.AttemptFinished, Provider: provider.Name(), Outcome: "protocol_error"})
+		}
+		resultCode = "embedding_provider_protocol_error"
+		writeError(w, http.StatusBadGateway, resultCode)
 		return
+	}
+	if trace != nil {
+		trace.Observe(router.AttemptEvent{Kind: router.AttemptFinished, Provider: provider.Name(), Outcome: "succeeded"})
+	}
+	if session != nil {
+		if err := session.FinishAttempt(r.Context(), provider.Name(), "succeeded"); err != nil {
+			writeError(w, 503, "quota_unavailable")
+			return
+		}
+		if err := session.Complete(r.Context(), "success", false); err != nil {
+			writeError(w, 503, "quota_unavailable")
+			return
+		}
 	}
 	data := make([]embeddingData, len(vectors))
 	for index, vector := range vectors {
 		data[index] = embeddingData{Object: "embedding", Embedding: vector, Index: index}
 	}
 	result := response{Object: "list", Model: input.Model, Data: data, TraceID: traceID, Provider: provider.Name(), InputCount: len(input.Inputs), Dimension: len(vectors[0]), DurationMS: h.now().Sub(started).Milliseconds()}
+	resultCode = "success"
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
 }
@@ -118,7 +203,11 @@ func decodeRequest(r *http.Request) (decodedRequest, error) {
 	if r.ContentLength > 64<<10 {
 		return decodedRequest{}, ErrInvalidRequest
 	}
-	decoder := json.NewDecoder(io.LimitReader(r.Body, 64<<10+1))
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 64<<10+1))
+	if err != nil || len(raw) > 64<<10 {
+		return decodedRequest{}, ErrInvalidRequest
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	var input request
 	if err := decoder.Decode(&input); err != nil {
@@ -168,6 +257,11 @@ func validateVectorsForRequest(vectors [][]float64, count int) error {
 	for _, vector := range vectors {
 		if len(vector) != dimension {
 			return ErrProtocol
+		}
+		for _, value := range vector {
+			if math.IsNaN(value) || math.IsInf(value, 0) {
+				return ErrProtocol
+			}
 		}
 	}
 	return nil

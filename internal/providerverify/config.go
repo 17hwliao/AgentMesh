@@ -3,7 +3,7 @@
 package providerverify
 
 import (
-	"net/url"
+	"agentmesh/internal/providerconfig"
 	"strings"
 )
 
@@ -63,6 +63,12 @@ func Load(lookup func(string) string) (Config, Report, error) {
 	if selected(config.Providers, "ollama") && !validBaseURL(config.OllamaBaseURL) {
 		return unavailable(CodeConfigurationInvalid)
 	}
+	if _, err := providerconfig.Bindings(providers, lookup); err != nil {
+		return unavailable(CodeConfigurationInvalid)
+	}
+	if selected(config.Providers, "ark") && !providerconfig.KeyValid(config.ArkAPIKey) {
+		return unavailable(CodeConfigurationInvalid)
+	}
 	return config, Report{Status: "verification_pending", NetworkAttempts: 0, ProviderAttempts: 0}, nil
 }
 
@@ -98,7 +104,4 @@ type configurationError string
 
 func (e configurationError) Error() string { return string(e) }
 
-func validBaseURL(raw string) bool {
-	parsed, err := url.Parse(raw)
-	return err == nil && (parsed.Scheme == "http" || parsed.Scheme == "https") && parsed.Host != "" && parsed.User == nil && parsed.RawQuery == "" && parsed.Fragment == ""
-}
+func validBaseURL(raw string) bool { _, err := providerconfig.BaseURL(raw); return err == nil }

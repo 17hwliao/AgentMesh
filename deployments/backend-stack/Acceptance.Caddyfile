@@ -1,0 +1,25 @@
+(backend) {
+ @private path /sentinel/metrics /metrics /sentinel/auth/*
+ handle @private {
+  respond "Not found" 404
+ }
+ @gateway path /v1/* /healthz /readyz
+ handle @gateway {
+  reverse_proxy gateway:18080 {
+   flush_interval -1
+  }
+ }
+ handle_path /sentinel/* {
+  reverse_proxy sentinel-api:8080
+ }
+ handle {
+  respond "Not found" 404
+ }
+}
+:8080 {
+ import backend
+}
+https://localhost:8443 {
+ tls internal
+ import backend
+}

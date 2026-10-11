@@ -85,3 +85,28 @@ func TestResolverUsesOnlyAuthorizedMockRoute(t *testing.T) {
 		t.Fatalf("visible=%v", visible)
 	}
 }
+
+func TestInactiveProviderDoesNotDisableUnrelatedRoutesOrCreateFallback(t *testing.T) {
+	ctx := context.Background()
+	adapter := provider.NewMock(provider.MockConfig{Name: "ark", FailAfterChunks: -1})
+	store := NewMemory([]Tenant{{ID: "tenant_a", Enabled: true, ModelRoutes: map[string][]string{"active": {"ark"}, "inactive": {"compatible"}, "mixed": {"ark", "compatible"}}}}, nil)
+	r, err := NewResolverWithInactive(ctx, store, []string{"ark"}, []provider.Provider{adapter}, []string{"compatible"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := r.Streamer(ctx, "tenant_a", "active"); !ok {
+		t.Fatal("unrelated active route unavailable")
+	}
+	for _, model := range []string{"inactive", "mixed"} {
+		if _, ok := r.Streamer(ctx, "tenant_a", model); ok {
+			t.Fatal("inactive route silently fell back")
+		}
+	}
+	bad := NewMemory([]Tenant{{ID: "tenant_a", Enabled: true, ModelRoutes: map[string][]string{"unknown": {"typo"}}}}, nil)
+	if _, err := NewResolverWithInactive(ctx, bad, []string{"ark"}, []provider.Provider{adapter}, []string{"compatible"}); err == nil {
+		t.Fatal("unknown route bypassed startup validation")
+	}
+	if _, err := NewResolverWithInactive(ctx, store, []string{"ark"}, []provider.Provider{adapter}, []string{"typo"}); err == nil {
+		t.Fatal("unknown inactive provider admitted")
+	}
+}

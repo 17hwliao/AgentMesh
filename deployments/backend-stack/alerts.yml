@@ -1,0 +1,33 @@
+groups:
+  - name: backend
+    rules:
+      - alert: BackendUnavailable
+        expr: up{job="backends"} == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "Backend metrics endpoint unavailable"}
+      - alert: BackendErrors
+        expr: sum by(service)(rate(backend_http_requests_total{status=~"5.."}[5m])) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Backend repeatedly returns server errors"}
+      - alert: SQLJobsStuck
+        expr: backend_sql_expired_jobs > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "SQL job leases remain expired"}
+      - alert: BillingRequiresReconciliation
+        expr: backend_billing_pending_reconciliation > 0
+        for: 2m
+        labels: {severity: warning}
+        annotations: {summary: "Upstream token usage proof is required to settle money holds"}
+      - alert: BillingRecoveryDelayed
+        expr: backend_billing_expired_holds > 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "Money hold recovery is delayed"}
+      - alert: HistoricalRelayBacklog
+        expr: backend_prior_pending_outbox > 20
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "Historical search indexing is delayed"}

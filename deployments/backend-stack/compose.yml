@@ -1,0 +1,344 @@
+# Run from this directory with a unique project name. No database or broker
+# publishes a host port. acceptance.yml is an explicitly local-only override.
+x-app: &app
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=128m,mode=1777"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  networks: [private, egress]
+  pids_limit: 128
+  mem_limit: 256m
+  stop_grace_period: 35s
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+x-am-env: &am-env
+  AGENTMESH_AUTH_STORE: "mysql"
+  AGENTMESH_AUTH_MYSQL_DSN_FILE: "/run/secrets/am_dsn"
+  AGENTMESH_ADMIN_TOKEN_FILE: "/run/secrets/admin_token"
+  AGENTMESH_QUOTA_MODE: "reservation"
+  AGENTMESH_QUOTA_MYSQL_DSN_FILE: "/run/secrets/am_dsn"
+  AGENTMESH_QUOTA_REDIS_URL_FILE: "/run/secrets/redis_url"
+  AGENTMESH_RATE_LIMIT_STORE: "redis"
+  AGENTMESH_RATE_LIMIT_REDIS_URL_FILE: "/run/secrets/redis_url"
+  AGENTMESH_RATE_LIMIT_PER_MINUTE: "120"
+  AGENTMESH_RATE_LIMIT_BURST: "20"
+  AGENTMESH_BOOTSTRAP_TENANT_ID: "operator"
+  AGENTMESH_BOOTSTRAP_TENANT_QUOTA_UNITS: "10000000"
+  AGENTMESH_RESERVATION_UNITS: "4096"
+  AGENTMESH_USAGE_KAFKA_MYSQL_DSN_FILE: "/run/secrets/am_dsn"
+  AGENTMESH_USAGE_KAFKA_BROKERS: "kafka:9092"
+  ARK_API_KEY_FILE: "/run/secrets/ark_key"
+  # Optional at Compose interpolation time for qwen.yml; the selected Ark
+  # adapter still rejects missing settings before startup.
+  ARK_BASE_URL: "${ARK_BASE_URL:-}"
+  ARK_MODEL: "${ARK_MODEL:-}"
+  OLLAMA_BASE_URL: "${OLLAMA_BASE_URL:?configure OLLAMA_BASE_URL}"
+  OLLAMA_MODEL: "${OLLAMA_MODEL:?configure OLLAMA_MODEL}"
+  AGENTMESH_EMBEDDING_PROVIDER: "ollama"
+  AGENTMESH_EMBEDDING_BASE_URL: "${OLLAMA_BASE_URL}"
+  AGENTMESH_EMBEDDING_MODEL: "${OLLAMA_EMBEDDING_MODEL:?configure OLLAMA_EMBEDDING_MODEL}"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector:4318/v1/traces"
+x-ss-env: &ss-env
+  SQL_SENTINEL_KAFKA_MYSQL_DSN_FILE: "/run/secrets/ss_dsn"
+  SQL_SENTINEL_KAFKA_BROKERS: "kafka:9092"
+  SQL_SENTINEL_BASELINE_DSN_FILE: "/run/secrets/baseline_dsn"
+  SQL_SENTINEL_CANDIDATE_DSN_FILE: "/run/secrets/candidate_dsn"
+  SQL_SENTINEL_API_TOKEN_FILE: "/run/secrets/sentinel_token"
+  SQL_SENTINEL_JWT_KEY_FILE: "/run/secrets/jwt_key"
+  SQL_SENTINEL_SHADOW_TABLES: "${SQL_SENTINEL_SHADOW_TABLES:-orders}"
+  SQL_SENTINEL_RAG_EMBEDDING_URL: "http://gateway:18080/v1/embeddings"
+  SQL_SENTINEL_RAG_DIMENSION: "${RAG_EMBEDDING_DIMENSION:-768}"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "http://otel-collector:4318/v1/traces"
+  SQL_SENTINEL_LISTEN: "0.0.0.0:8080"
+  EINO_BASE_URL: "http://gateway:18080/v1"
+  EINO_MODEL: "sql-review"
+  OPENAI_API_KEY_FILE: "/run/secrets/bootstrap_key"
+  GITHUB_WEBHOOK_SECRET_FILE: "/run/secrets/webhook_secret"
+  GITHUB_REPOSITORIES: "${GITHUB_REPOSITORIES:-17hwliao/sql-sentinel}"
+  GITHUB_TOKEN_FILE: "/run/secrets/github_token"
+  GITHUB_PUBLISH_COMMENTS: "${GITHUB_PUBLISH_COMMENTS:-false}"
+services:
+  control:
+    image: mysql:8.4.11
+    restart: unless-stopped
+    mem_limit: 768m
+    networks: [private]
+    command: ["--innodb-buffer-pool-size=256M", "--max-connections=80", "--performance-schema=OFF", "--local-infile=OFF"]
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root
+      MYSQL_ROOT_HOST: "%"
+    secrets:
+      - source: control_root
+        target: mysql_root
+      - am_password
+      - ss_password
+      - migrate_password
+    volumes:
+      - control-data:/var/lib/mysql
+      - ./init-control.sh:/docker-entrypoint-initdb.d/10-users.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+  baseline:
+    image: mysql:8.4.11
+    restart: unless-stopped
+    mem_limit: 768m
+    networks: [private]
+    command: ["--innodb-buffer-pool-size=256M", "--max-connections=80", "--performance-schema=OFF", "--local-infile=OFF"]
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root
+      MYSQL_ROOT_HOST: "%"
+    secrets:
+      - source: baseline_root
+        target: mysql_root
+      - baseline_password
+    volumes:
+      - baseline-data:/var/lib/mysql
+      - ./init-baseline.sh:/docker-entrypoint-initdb.d/10-users.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+  candidate:
+    image: mysql:8.4.11
+    restart: unless-stopped
+    mem_limit: 768m
+    networks: [private]
+    command: ["--innodb-buffer-pool-size=256M", "--max-connections=80", "--performance-schema=OFF", "--local-infile=OFF"]
+    environment:
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root
+      MYSQL_ROOT_HOST: "%"
+    secrets:
+      - source: candidate_root
+        target: mysql_root
+      - candidate_password
+    volumes:
+      - candidate-data:/var/lib/mysql
+      - ./init-candidate.sh:/docker-entrypoint-initdb.d/10-users.sh:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "--silent"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    mem_limit: 384m
+    networks: [private]
+    entrypoint: ["/bin/sh", "/opt/redis-start.sh"]
+    secrets: [redis_password]
+    volumes: ["redis-data:/data", "./redis-start.sh:/opt/redis-start.sh:ro"]
+    tmpfs: ["/tmp"]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$(cat /run/secrets/redis_password) redis-cli ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    mem_limit: 1g
+    networks: [private]
+    environment:
+      KAFKA_HEAP_OPTS: "-Xmx512M -Xms256M"
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "INTERNAL://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "INTERNAL://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: "168"
+      KAFKA_LOG_RETENTION_BYTES: "2147483648"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      CLUSTER_ID: "MkU3OEVBNTcwNTJENDM2Qk"
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server kafka:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 8s
+      retries: 20
+  topics:
+    image: apache/kafka:4.3.1
+    networks: [private]
+    depends_on: {kafka: {condition: service_healthy}}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        for topic in sql-sentinel.jobs agentmesh.usage.v1 agentmesh.usage.v1.dlq; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$$topic" --partitions 3 --replication-factor 1
+        done
+  am-migrate:
+    <<: *app
+    image: local/agentmesh-backend:reviewed
+    build: {context: ../AgentMesh}
+    restart: "no"
+    depends_on: {control: {condition: service_healthy}}
+    command: ["migrate"]
+    secrets: [am_migrate_dsn, bootstrap_key]
+    environment:
+      AGENTMESH_MIGRATE_MYSQL_DSN_FILE: /run/secrets/am_migrate_dsn
+      AGENTMESH_BOOTSTRAP_TENANT_ID: operator
+      AGENTMESH_BOOTSTRAP_API_KEY_FILE: /run/secrets/bootstrap_key
+      AGENTMESH_BOOTSTRAP_MODEL_ROUTES: '{"sql-review":["ark"],"embedding":["ollama"]}'
+  ss-migrate:
+    <<: *app
+    image: local/sql-sentinel-backend:reviewed
+    build: {context: ../sql-sentinel}
+    restart: "no"
+    depends_on: {control: {condition: service_healthy}}
+    command: ["migrate"]
+    secrets: [ss_migrate_dsn]
+    environment:
+      SQL_SENTINEL_MIGRATE_MYSQL_DSN_FILE: /run/secrets/ss_migrate_dsn
+  seed:
+    <<: *app
+    image: local/sql-sentinel-backend:reviewed
+    restart: "no"
+    profiles: [setup]
+    depends_on: {baseline: {condition: service_healthy}, candidate: {condition: service_healthy}}
+    command: ["sentinel", "seed", "--rows", "10000", "--seed", "42", "--target", "both"]
+    secrets: [baseline_seed_dsn, candidate_seed_dsn]
+    environment:
+      SQL_SENTINEL_BASELINE_DSN_FILE: /run/secrets/baseline_seed_dsn
+      SQL_SENTINEL_CANDIDATE_DSN_FILE: /run/secrets/candidate_seed_dsn
+  gateway:
+    <<: *app
+    image: local/agentmesh-backend:reviewed
+    ports: ["127.0.0.1:18080:18080"]
+    command: ["api", "--addr", "0.0.0.0:18080", "--allow-container-listen", "--providers", "ark,ollama"]
+    depends_on: {am-migrate: {condition: service_completed_successfully}, redis: {condition: service_healthy}, topics: {condition: service_completed_successfully}}
+    environment: *am-env
+    secrets: [am_dsn, redis_url, admin_token, ark_key]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:18080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  usage-relay:
+    <<: *app
+    image: local/agentmesh-backend:reviewed
+    command: ["usage-kafka-relay"]
+    environment: *am-env
+    secrets: [am_dsn, redis_url, admin_token, ark_key]
+    depends_on: {gateway: {condition: service_healthy}}
+  usage-worker:
+    <<: *app
+    image: local/agentmesh-backend:reviewed
+    command: ["usage-kafka-worker"]
+    environment: *am-env
+    secrets: [am_dsn, redis_url, admin_token, ark_key]
+    depends_on: {gateway: {condition: service_healthy}}
+  sentinel-api:
+    <<: *app
+    image: local/sql-sentinel-backend:reviewed
+    command: ["api"]
+    ports: ["127.0.0.1:18081:8080"]
+    environment: *ss-env
+    secrets: [ss_dsn, baseline_dsn, candidate_dsn, sentinel_token, bootstrap_key, webhook_secret, github_token,jwt_key]
+    depends_on: {ss-migrate: {condition: service_completed_successfully}}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+  sentinel-relay:
+    <<: *app
+    image: local/sql-sentinel-backend:reviewed
+    command: ["kafka-relay"]
+    environment: *ss-env
+    secrets: [ss_dsn, baseline_dsn, candidate_dsn, sentinel_token, bootstrap_key, webhook_secret, github_token,jwt_key]
+    depends_on: {ss-migrate: {condition: service_completed_successfully}, topics: {condition: service_completed_successfully}}
+  sentinel-worker:
+    <<: *app
+    image: local/sql-sentinel-backend:reviewed
+    command: ["kafka-worker"]
+    mem_limit: 512m
+    environment: *ss-env
+    secrets: [ss_dsn, baseline_dsn, candidate_dsn, sentinel_token, bootstrap_key, webhook_secret, github_token,jwt_key]
+    depends_on: {ss-migrate: {condition: service_completed_successfully}, gateway: {condition: service_healthy}, baseline: {condition: service_healthy}, candidate: {condition: service_healthy}, topics: {condition: service_completed_successfully}}
+  prometheus:
+    <<: *app
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    networks: [private]
+    command: ["--config.file=/etc/prometheus/prometheus.yml","--storage.tsdb.path=/prometheus","--storage.tsdb.retention.time=14d","--storage.tsdb.retention.size=500MB"]
+    volumes: ["./prometheus.yml:/etc/prometheus/prometheus.yml:ro","./alerts.yml:/etc/prometheus/alerts.yml:ro","prometheus-data:/prometheus"]
+  otel-collector:
+    <<: *app
+    image: otel/opentelemetry-collector-contrib:0.162.0@sha256:39923a8e431bd1f57be82411999d389fcfe40857492e4365456d97a4c1f74be6
+    networks: [private]
+    command: ["--config=/etc/otelcol/config.yml"]
+    volumes: ["./otel-collector.yml:/etc/otelcol/config.yml:ro"]
+  proxy:
+    image: local/backend-proxy:reviewed
+    build: {context: .,dockerfile: Proxy.Dockerfile}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=32m"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 256m
+    stop_grace_period: 35s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+    networks: [private, egress]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment: {APP_DOMAIN: "${APP_DOMAIN:?configure APP_DOMAIN}"}
+    volumes: ["./Caddyfile:/etc/caddy/Caddyfile:ro", "caddy-data:/data", "caddy-config:/config"]
+    depends_on: {gateway: {condition: service_healthy}, sentinel-api: {condition: service_healthy}}
+networks:
+  private: {internal: true}
+  egress: {}
+volumes:
+  control-data: {}
+  baseline-data: {}
+  candidate-data: {}
+  redis-data: {}
+  kafka-data: {}
+  caddy-data: {}
+  caddy-config: {}
+  prometheus-data: {}
+secrets:
+  control_root: {file: ./secrets/control_root}
+  baseline_root: {file: ./secrets/baseline_root}
+  candidate_root: {file: ./secrets/candidate_root}
+  am_password: {file: ./secrets/am_password}
+  ss_password: {file: ./secrets/ss_password}
+  migrate_password: {file: ./secrets/migrate_password}
+  baseline_password: {file: ./secrets/baseline_password}
+  candidate_password: {file: ./secrets/candidate_password}
+  redis_password: {file: ./secrets/redis_password}
+  am_dsn: {file: ./secrets/am_dsn}
+  ss_dsn: {file: ./secrets/ss_dsn}
+  am_migrate_dsn: {file: ./secrets/am_migrate_dsn}
+  ss_migrate_dsn: {file: ./secrets/ss_migrate_dsn}
+  baseline_dsn: {file: ./secrets/baseline_dsn}
+  candidate_dsn: {file: ./secrets/candidate_dsn}
+  baseline_seed_dsn: {file: ./secrets/baseline_seed_dsn}
+  candidate_seed_dsn: {file: ./secrets/candidate_seed_dsn}
+  redis_url: {file: ./secrets/redis_url}
+  admin_token: {file: ./secrets/admin_token}
+  sentinel_token: {file: ./secrets/sentinel_token}
+  bootstrap_key: {file: ./secrets/bootstrap_key}
+  webhook_secret: {file: ./secrets/webhook_secret}
+  github_token: {file: ./secrets/github_token}
+  ark_key: {file: ./secrets/ark_key}
+  jwt_key: {file: ./secrets/jwt_key}

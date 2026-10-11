@@ -101,9 +101,19 @@ func (r Router) StreamWithAttemptHook(ctx context.Context, request provider.Chat
 			}
 		}
 		emitted := false
+		attemptRequest := request
+		if budget, ok := hook.(interface{ OutputLimit() int }); ok {
+			limit := budget.OutputLimit()
+			if limit <= 0 {
+				return errors.New("output budget exhausted")
+			}
+			if attemptRequest.MaxTokens <= 0 || attemptRequest.MaxTokens > limit {
+				attemptRequest.MaxTokens = limit
+			}
+		}
 		var hookFailure error
 		r.observe(AttemptEvent{Provider: candidate.Name(), Kind: AttemptStarted})
-		err := candidate.Stream(ctx, request, func(chunk provider.Chunk) error {
+		err := candidate.Stream(ctx, attemptRequest, func(chunk provider.Chunk) error {
 			if hook != nil {
 				if err := hook.BeforeEmit(ctx, candidate.Name(), chunk); err != nil {
 					hookFailure = hookFailureAfterProgress(ctx, hook, candidate.Name(), err)

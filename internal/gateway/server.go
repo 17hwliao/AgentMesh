@@ -2,6 +2,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,13 +13,16 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"agentmesh/internal/auth"
+	"agentmesh/internal/billing"
 	"agentmesh/internal/observability"
 	"agentmesh/internal/provider"
 	"agentmesh/internal/ratelimit"
 	"agentmesh/internal/reservation"
 	"agentmesh/internal/router"
+	"agentmesh/internal/semanticcache"
 )
 
 const (
@@ -67,6 +71,10 @@ type Server struct {
 	rateLimit      ratelimit.Gate
 	reservations   reservation.StreamGate
 	recorder       *observability.Recorder
+	admission      *admission
+	cache          *semanticcache.Cache
+	cacheRoute     func(context.Context, string, string) string
+	cacheHit       func(context.Context, string, string) error
 }
 
 func New(streamer router.Streamer) *Server { return NewWithHealth(streamer) }
@@ -100,6 +108,11 @@ func NewWithTenantRoutingAndRecorderAndReservations(resolver TenantResolver, rec
 func (s *Server) SetRateGate(gate ratelimit.Gate) {
 	s.rateLimit = gate
 }
+func (s *Server) SetSemanticCache(cache *semanticcache.Cache, route func(context.Context, string, string) string, hit func(context.Context, string, string) error) {
+	s.cache = cache
+	s.cacheRoute = route
+	s.cacheHit = hit
+}
 
 // SetEmbeddingHandler installs the authenticated, non-streaming embedding
 // endpoint. Keeping the handler optional preserves existing chat-only tests
@@ -125,9 +138,9 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux := http.NewServeMux()
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
-	mux.Handle(chatPath, authenticate(s.withRateLimit(http.HandlerFunc(s.handleChat))))
+	mux.Handle(chatPath, authenticate(s.withConcurrency(s.withRateLimit(http.HandlerFunc(s.handleChat)))))
 	if s.embeddings != nil {
-		mux.Handle("/v1/embeddings", authenticate(s.embeddings))
+		mux.Handle("/v1/embeddings", authenticate(s.withConcurrency(s.withRateLimit(s.embeddings))))
 	}
 	mux.Handle(tracePath, authenticate(http.HandlerFunc(s.handleTrace)))
 	return mux
@@ -206,9 +219,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, request *http.Request) {
 }
 
 type chatRequest struct {
-	Model    string             `json:"model"`
-	Messages []provider.Message `json:"messages"`
-	Stream   bool               `json:"stream"`
+	Model         string             `json:"model"`
+	Messages      []provider.Message `json:"messages"`
+	Stream        bool               `json:"stream"`
+	MaxTokens     int                `json:"max_tokens,omitempty"`
+	Temperature   *float64           `json:"temperature,omitempty"`
+	StreamOptions *struct {
+		IncludeUsage bool `json:"include_usage"`
+	} `json:"stream_options,omitempty"`
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
@@ -261,10 +279,31 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var reservationSession reservation.StreamSession
+	chat := provider.ChatRequest{Model: input.Model, Messages: input.Messages, MaxTokens: input.MaxTokens, Temperature: input.Temperature}
+	var cached *semanticcache.Prepared
+	if s.cache != nil && s.cacheRoute != nil && request.Header.Get("X-AgentMesh-Cache") == "semantic" {
+		step, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+		p, e := s.cache.Prepare(step, tenantID, request.Header.Get("X-AgentMesh-Cache-Namespace"), s.cacheRoute(step, tenantID, input.Model), chat)
+		if e == nil {
+			cached = &p
+			text, hit, getErr := s.cache.Get(step, p)
+			if getErr == nil && hit && (s.cacheHit == nil || s.cacheHit(step, tenantID, input.Model) == nil) {
+				cancel()
+				w.Header().Set("X-AgentMesh-Cache", "hit")
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-store")
+				_ = writeSSE(w, map[string]any{"choices": []map[string]any{{"delta": map[string]string{"content": text}}}, "usage": provider.Usage{}, "cache": map[string]any{"hit": true, "provider_called": false, "charged_nano": 0}})
+				_ = writeDone(w)
+				completeTrace(session, "cache_hit", false)
+				return
+			}
+		}
+		cancel()
+	}
 	if s.reservations != nil {
 		reservationSession, err = s.reservations.Begin(request.Context(), tenantID, input.Model, input.Messages)
 		if err != nil {
-			if reservation.Code(err) == quotaExhausted {
+			if reservation.Code(err) == quotaExhausted || errors.Is(err, billing.ErrInsufficient) {
 				completeTrace(session, quotaExhausted, false)
 				writeJSONError(w, http.StatusTooManyRequests, quotaExhausted)
 				return
@@ -275,6 +314,9 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		}
 	}
 	started := false
+	if bill, ok := reservationSession.(interface{ BillingID() string }); ok {
+		w.Header().Set("X-AgentMesh-Billing-Request-ID", bill.BillingID())
+	}
 	start := func() {
 		if started {
 			return
@@ -284,8 +326,21 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
 	}
-	chat := provider.ChatRequest{Model: input.Model, Messages: input.Messages}
+	var cacheText strings.Builder
+	cacheable := cached != nil
+	var finalUsage *provider.Usage
 	emit := func(chunk provider.Chunk) error {
+		if cacheable {
+			if cacheText.Len()+len(chunk.Delta) > 64<<10 {
+				cacheable = false
+			} else {
+				cacheText.WriteString(chunk.Delta)
+			}
+		}
+		if chunk.Usage != nil {
+			u := *chunk.Usage
+			finalUsage = &u
+		}
 		start()
 		return writeSSE(w, map[string]any{
 			"choices": []map[string]any{{"delta": map[string]string{"content": chunk.Delta}}},
@@ -317,6 +372,11 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		}
 	}
 	if err == nil {
+		if cacheable && finalUsage != nil && !finalUsage.Estimated {
+			step, cancel := context.WithTimeout(request.Context(), time.Second)
+			_ = s.cache.Put(step, *cached, cacheText.String())
+			cancel()
+		}
 		completeTrace(session, "success", false)
 		if !started {
 			start()
@@ -365,7 +425,11 @@ func completeTrace(session *observability.Session, resultCode string, cancelled 
 
 func decodeChatRequest(request *http.Request) (chatRequest, error) {
 	defer request.Body.Close()
-	decoder := json.NewDecoder(io.LimitReader(request.Body, maxRequestBytes))
+	data, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
+	if err != nil || len(data) > maxRequestBytes {
+		return chatRequest{}, errors.New("body too large")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var input chatRequest
 	if err := decoder.Decode(&input); err != nil {
@@ -376,6 +440,15 @@ func decodeChatRequest(request *http.Request) (chatRequest, error) {
 	}
 	if strings.TrimSpace(input.Model) == "" || len(input.Messages) == 0 || !input.Stream {
 		return chatRequest{}, errors.New("missing required chat fields")
+	}
+	if input.MaxTokens < 0 || input.MaxTokens > 4096 {
+		return chatRequest{}, errors.New("invalid output limit")
+	}
+	if input.Temperature != nil && (*input.Temperature < 0 || *input.Temperature > 2 || math.IsNaN(*input.Temperature) || math.IsInf(*input.Temperature, 0)) {
+		return chatRequest{}, errors.New("invalid temperature")
+	}
+	if input.MaxTokens == 0 {
+		input.MaxTokens = 1024
 	}
 	for _, message := range input.Messages {
 		if strings.TrimSpace(message.Role) == "" {
@@ -402,6 +475,7 @@ func writeJSONError(w http.ResponseWriter, status int, code string) {
 }
 
 func writeSSE(w http.ResponseWriter, payload any) error {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(15 * time.Second))
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return err

@@ -14,16 +14,19 @@ type Message struct {
 // ChatRequest is input to one provider attempt. It contains no credentials or
 // tenant state in this mock-only stage.
 type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
+	Model       string    `json:"model"`
+	Messages    []Message `json:"messages"`
+	MaxTokens   int       `json:"max_tokens,omitempty"`
+	Temperature *float64  `json:"temperature,omitempty"`
 }
 
 // Usage is optional provider-observed usage. Billing semantics are deliberately
 // out of scope until the quota/reservation stage.
 type Usage struct {
-	InputTokens  int  `json:"input_tokens"`
-	OutputTokens int  `json:"output_tokens"`
-	Estimated    bool `json:"estimated"`
+	InputTokens       int  `json:"input_tokens"`
+	OutputTokens      int  `json:"output_tokens"`
+	Estimated         bool `json:"estimated"`
+	CachedInputTokens int  `json:"cached_input_tokens,omitempty"`
 }
 
 // Chunk is one incremental stream result.

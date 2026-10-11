@@ -37,3 +37,9 @@ coverage.*
 
 # 求职私有资料（不进公开仓库）
 求职私有资料/
+
+# Python deployment helpers
+__pycache__/
+*.pyc
+secrets/
+backups/

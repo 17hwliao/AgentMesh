@@ -145,7 +145,7 @@ func TestCoordinatorAccumulatesFallbackAttemptInputsWithinReservation(t *testing
 	records := &fakeCoordinatorRecords{}
 	quota := &fakeCoordinatorQuota{}
 	coordinator, err := NewCoordinator(records, quota, CoordinatorConfig{
-		ReservationUnits: 4, NextID: sequenceIDs("reservation-fallback", "request-fallback"),
+		ReservationUnits: 5, NextID: sequenceIDs("reservation-fallback", "request-fallback"),
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +170,7 @@ func TestCoordinatorAccumulatesFallbackAttemptInputsWithinReservation(t *testing
 	if err := session.Complete(context.Background(), quotaExhaustedCode, false); err != nil {
 		t.Fatal(err)
 	}
-	if records.started != 2 || records.finished != 1 || quota.settleConsumed != 4 {
+	if records.started != 2 || records.finished != 1 || quota.settleConsumed != 5 {
 		t.Fatalf("started=%d finished=%d settled=%d", records.started, records.finished, quota.settleConsumed)
 	}
 }

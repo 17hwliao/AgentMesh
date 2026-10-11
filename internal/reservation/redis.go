@@ -142,7 +142,7 @@ func (s *RedisQuotaStore) run(ctx context.Context, script, tenantID, reservation
 	if s == nil || s.evaluator == nil || tenantID == "" || reservationID == "" || version == 0 {
 		return QuotaOperationResult{}, domainError(CodeStateInvalid)
 	}
-	return s.runKeys(ctx, script, []string{balanceKey(tenantID), operationKey(tenantID, reservationID, version, operation)}, args...)
+	return s.runKeys(ctx, script, []string{balanceKey(tenantID), operationKey(tenantID, reservationID, version, operation), reserveMarkerKey(tenantID, reservationID)}, args...)
 }
 
 func (s *RedisQuotaStore) runKeys(ctx context.Context, script string, keys []string, args ...any) (QuotaOperationResult, error) {
@@ -158,7 +158,12 @@ func balanceKey(tenantID string) string {
 }
 
 func operationKey(tenantID, reservationID string, version uint64, operation string) string {
-	return fmt.Sprintf("%s:operation:%s:%s:%d:%s", quotaKeyPrefix, tenantID, reservationID, version, operation)
+	// A database CAS version changes during recovery; business operations do not.
+	// Cancel and settle share a terminal fence, preventing a second refund.
+	if operation == "cancel" || operation == "settle" {
+		operation = "terminal"
+	}
+	return fmt.Sprintf("%s:operation:v2:%s:%s:%s", quotaKeyPrefix, tenantID, reservationID, operation)
 }
 
 func reserveMarkerKey(tenantID, reservationID string) string {
@@ -222,6 +227,7 @@ return result`
 
 const settleLua = `local prior = redis.call('GET', KEYS[2])
 if prior then return cjson.decode(prior) end
+if redis.call('EXISTS',KEYS[1])==0 or redis.call('EXISTS',KEYS[3])==0 then return redis.error_reply('quota_recovery_required') end
 local reserved = tonumber(ARGV[1])
 local consumed = tonumber(ARGV[2])
 if not reserved or not consumed or consumed > reserved then return {'invalid', 0, 0} end
@@ -233,6 +239,7 @@ return result`
 
 const cancelLua = `local prior = redis.call('GET', KEYS[2])
 if prior then return cjson.decode(prior) end
+if redis.call('EXISTS',KEYS[1])==0 or redis.call('EXISTS',KEYS[3])==0 then return redis.error_reply('quota_recovery_required') end
 local units = tonumber(ARGV[1])
 if not units then return {'invalid', 0, 0} end
 local available = redis.call('INCRBY', KEYS[1], units)

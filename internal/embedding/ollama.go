@@ -1,11 +1,13 @@
 package embedding
 
 import (
+	"agentmesh/internal/telemetry"
 	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -31,7 +33,7 @@ func NewOllamaProvider(config OllamaConfig) (*OllamaProvider, error) {
 	}
 	client := config.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{Timeout: 30 * time.Second, Transport: telemetry.Transport{}}
 	}
 	return &OllamaProvider{baseURL: baseURL, model: config.Model, client: client}, nil
 }
@@ -65,7 +67,11 @@ func (p *OllamaProvider) Embed(ctx context.Context, _ string, inputs []string) (
 	var decoded struct {
 		Embeddings [][]float64 `json:"embeddings"`
 	}
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 8<<20+1))
+	if err != nil || len(raw) > 8<<20 {
+		return nil, ErrProtocol
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProtocol, err)
 	}
 	if len(decoded.Embeddings) != len(inputs) {

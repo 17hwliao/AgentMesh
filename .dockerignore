@@ -1,6 +1,16 @@
 .git
 .gitignore
-**/*_test.go
 work
 outputs
 deployments/kafka-usage
+.private
+.env
+.env.*
+secrets
+**/secrets
+*.pem
+*.key
+backups
+validation
+__pycache__
+*.pyc

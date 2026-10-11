@@ -1,0 +1,22 @@
+# Private local protocol acceptance only. Never use on a cloud host.
+services:
+  jaeger:
+    networks: [private,egress]
+    ports: [127.0.0.1:29686:16686]
+  alertmanager:
+    networks: [private,egress]
+    ports: [127.0.0.1:29903:9093]
+  gateway:
+    environment: {COMPATIBLE_MODELS: '{"domestic-chat":"fixture"}'}
+  model-runner:
+    environment:
+      COMPATIBLE_BASE_URL: http://fixtures:8090
+      COMPATIBLE_MODELS: '{"domestic-chat":"fixture"}'
+  verifier:
+    environment: {SQL_SENTINEL_SHADOW_TABLES: 'orders,customers,invoices'}
+  elasticsearch:
+    networks: [private,egress]
+    ports: [127.0.0.1:29200:9200]
+  postgres:
+    networks: [private,egress]
+    ports: [127.0.0.1:29432:5432]

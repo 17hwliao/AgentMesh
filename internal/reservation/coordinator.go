@@ -121,7 +121,7 @@ func (s *coordinatorSession) BeforeAttempt(ctx context.Context, providerName str
 		return domainError(CodeStateInvalid)
 	}
 	inputRunes := messageRunes(request.Messages)
-	if s.estimatedConsumed()+inputRunes > s.reservation.ReservedUnits {
+	if s.estimatedConsumed()+inputRunes >= s.reservation.ReservedUnits {
 		return domainError(quotaExhaustedCode)
 	}
 	attempt, updated, err := s.coordinator.records.StartAttempt(ctx, s.tenantID, s.reservation.ID, s.reservation.Version, providerName, s.model)
@@ -138,6 +138,9 @@ func (s *coordinatorSession) BeforeAttempt(ctx context.Context, providerName str
 func (s *coordinatorSession) BeforeEmit(ctx context.Context, providerName string, chunk provider.Chunk) error {
 	if s.current == nil || s.current.attempt.ProviderName != providerName {
 		return domainError(CodeStateInvalid)
+	}
+	if uint64(utf8.RuneCountInString(chunk.Delta)) > s.reservation.ReservedUnits-minUnits(s.estimatedConsumed(), s.reservation.ReservedUnits) {
+		return domainError(quotaExhaustedCode)
 	}
 	if s.current.chunks == 0 || s.coordinator.now().Sub(s.lastFlush) < s.coordinator.config.FlushInterval {
 		return nil
@@ -167,10 +170,14 @@ func (s *coordinatorSession) FinishAttempt(ctx context.Context, providerName, ou
 	if s.current == nil || s.current.attempt.ProviderName != providerName || outcome == "" {
 		return domainError(CodeStateInvalid)
 	}
-	return s.coordinator.records.FinishAttempt(ctx, s.tenantID, s.reservation.ID, s.current.attempt.Ordinal, outcome)
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	return s.coordinator.records.FinishAttempt(cleanup, s.tenantID, s.reservation.ID, s.current.attempt.Ordinal, outcome)
 }
 
 func (s *coordinatorSession) Complete(ctx context.Context, _ string, _ bool) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	if s.completed {
 		return nil
 	}
@@ -195,6 +202,10 @@ func (s *coordinatorSession) Complete(ctx context.Context, _ string, _ bool) err
 	if err != nil {
 		return err
 	}
+	if result.ReleasedUnits > s.reservation.ReservedUnits {
+		return domainError(CodeStateInvalid)
+	}
+	consumed = s.reservation.ReservedUnits - result.ReleasedUnits
 	if _, err := s.coordinator.records.MarkSettled(ctx, s.tenantID, s.reservation.ID, s.reservation.Version, consumed, result.ReleasedUnits, observed, kind); err != nil {
 		return err
 	}
@@ -226,10 +237,19 @@ func (s *coordinatorSession) settlement(persistenceUncertain bool) (uint64, bool
 			observed = false
 			break
 		}
-		providerUnits += uint64(attempt.providerUsage.InputTokens + attempt.providerUsage.OutputTokens)
+		if attempt.providerUsage.InputTokens < 0 || attempt.providerUsage.OutputTokens < 0 {
+			observed = false
+			break
+		}
+		units := uint64(attempt.providerUsage.InputTokens) + uint64(attempt.providerUsage.OutputTokens)
+		if units > s.reservation.ReservedUnits || providerUnits > s.reservation.ReservedUnits-units {
+			observed = false
+			break
+		}
+		providerUnits += units
 	}
-	if observed {
-		return minUnits(providerUnits, s.reservation.ReservedUnits), true, "provider_usage"
+	if observed && providerUnits <= s.reservation.ReservedUnits {
+		return providerUnits, true, "provider_usage"
 	}
 	// Rune metering is only a durable lower bound. It can diagnose what the
 	// gateway observed, but cannot prove that the unobserved reservation budget
@@ -291,10 +311,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, before time.Time, limit int)
 	for _, candidate := range candidates {
 		value := candidate.Reservation
 		if candidate.AttemptStarted || candidate.ForwardedRunes > 0 {
-			if _, err := r.quota.Settle(ctx, value.TenantID, value.ID, value.Version, value.ReservedUnits, value.ReservedUnits); err != nil {
+			result, err := r.quota.Settle(ctx, value.TenantID, value.ID, value.Version, value.ReservedUnits, value.ReservedUnits)
+			if err != nil {
 				return completed, err
 			}
-			if _, err := r.records.MarkSettled(ctx, value.TenantID, value.ID, value.Version, value.ReservedUnits, 0, false, "estimated"); err != nil {
+			if result.ReleasedUnits > value.ReservedUnits {
+				return completed, domainError(CodeStateInvalid)
+			}
+			if _, err := r.records.MarkSettled(ctx, value.TenantID, value.ID, value.Version, value.ReservedUnits-result.ReleasedUnits, result.ReleasedUnits, false, "estimated"); err != nil {
 				return completed, err
 			}
 		} else {
@@ -314,4 +338,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, before time.Time, limit int)
 		completed++
 	}
 	return completed, nil
+}
+
+// OutputLimit bounds upstream generation as well as the forwarded text. Quota
+// units remain conservative credits, not an exact tokenizer or provider bill.
+func (s *coordinatorSession) OutputLimit() int {
+	used := minUnits(s.estimatedConsumed(), s.reservation.ReservedUnits)
+	remaining := s.reservation.ReservedUnits - used
+	if remaining > 4096 {
+		remaining = 4096
+	}
+	return int(remaining)
 }

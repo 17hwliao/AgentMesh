@@ -3,6 +3,7 @@
 package main
 
 import (
+	"agentmesh/internal/configenv"
 	"context"
 	"errors"
 	"fmt"
@@ -39,6 +40,9 @@ type config struct {
 }
 
 func main() {
+	if err := configenv.LoadSecretFiles(); err != nil {
+		log.Fatal("secret_configuration_failed")
+	}
 	ctx, stop := signalContext()
 	defer stop()
 	if err := run(os.Getenv, ctx); err != nil {
@@ -63,11 +67,17 @@ func run(lookup func(string) string, ctx context.Context) error {
 
 	writer := segmentkafka.NewWriter(segmentkafka.WriterConfig{Brokers: cfg.Brokers, Balancer: &segmentkafka.Hash{}})
 	defer writer.Close()
-	relay := usagekafka.Relay{Store: &usagekafka.MySQLStore{DB: db}, Publisher: usagekafka.KafkaWriter{Writer: writer}, BatchSize: cfg.Batch, Owner: cfg.Owner, LeaseFor: cfg.LeaseFor}
+	store := &usagekafka.MySQLStore{DB: db}
+	relay := usagekafka.Relay{Store: store, Publisher: usagekafka.KafkaWriter{Writer: writer}, BatchSize: cfg.Batch, Owner: cfg.Owner, LeaseFor: cfg.LeaseFor}
 	log.Printf("usage kafka relay started interval=%s batch_size=%d lease=%s", cfg.Interval, cfg.Batch, cfg.LeaseFor)
-	return usagekafka.RunPolling(ctx, cfg.Interval, relay.RunOnce, func(result usagekafka.PollResult) {
+	return usagekafka.RunPolling(ctx, cfg.Interval, func(ctx context.Context) (int, error) {
+		if _, err := store.RecoverUnprojected(ctx, time.Now().UTC(), cfg.Batch); err != nil {
+			return 0, err
+		}
+		return relay.RunOnce(ctx)
+	}, func(result usagekafka.PollResult) {
 		if result.Err != nil {
-			log.Printf("usage kafka relay scan failed published=%d error=%v", result.Published, result.Err)
+			log.Printf("usage kafka relay scan failed published=%d", result.Published)
 			return
 		}
 		if result.Published > 0 {

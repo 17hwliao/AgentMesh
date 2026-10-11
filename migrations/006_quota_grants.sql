@@ -1,0 +1,7 @@
+CREATE TABLE IF NOT EXISTS tenant_quota_grants (
+  tenant_id VARCHAR(128) NOT NULL,
+  grant_id VARCHAR(128) NOT NULL,
+  units BIGINT UNSIGNED NOT NULL,
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (tenant_id, grant_id)
+) ENGINE=InnoDB;

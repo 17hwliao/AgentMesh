@@ -3,7 +3,6 @@
 package gatewayclient
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,8 +12,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"agentmesh/internal/provider"
+	"agentmesh/internal/sse"
 )
 
 const chatPath = "/v1/chat/completions"
@@ -47,7 +48,8 @@ func Stream(ctx context.Context, endpoint, apiKey, model string, messages []prov
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+apiKey)
-	response, err := http.DefaultClient.Do(request)
+	client := &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
@@ -59,14 +61,22 @@ func Stream(ctx context.Context, endpoint, apiKey, model string, messages []prov
 		return errors.New("gateway response is not SSE")
 	}
 
-	scanner := bufio.NewScanner(response.Body)
-	scanner.Buffer(make([]byte, 1024), 128<<10)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	reader := sse.NewReader(response.Body)
+	for {
+		frame, err := reader.Next()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if errors.Is(err, io.EOF) {
+				return io.ErrUnexpectedEOF
+			}
+			return err
 		}
-		data := strings.TrimPrefix(line, "data: ")
+		if frame.Type == "error" {
+			return errors.New("gateway_stream_error")
+		}
+		data := strings.TrimSpace(frame.Data)
 		if data == "[DONE]" {
 			return nil
 		}
@@ -92,7 +102,6 @@ func Stream(ctx context.Context, endpoint, apiKey, model string, messages []prov
 			}
 		}
 	}
-	return scanner.Err()
 }
 
 func readHTTPError(response *http.Response) error {

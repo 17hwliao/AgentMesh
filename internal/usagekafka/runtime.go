@@ -2,6 +2,7 @@ package usagekafka
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -60,8 +61,6 @@ type Worker struct {
 	DLQ       Publisher
 	Config    Config
 	Now       func() time.Time
-	mu        sync.Mutex
-	failures  map[string]int
 }
 
 func (w *Worker) Handle(ctx context.Context, message Message) error {
@@ -82,54 +81,57 @@ func (w *Worker) Run(ctx context.Context) error {
 	if w.Now == nil {
 		w.Now = time.Now
 	}
-	if w.failures == nil {
-		w.failures = map[string]int{}
-	}
 	for {
 		msg, err := w.Source.Receive(ctx)
 		if err != nil {
 			return err
 		}
-		err = w.Handle(ctx, msg)
-		if err == nil {
-			if err = w.Source.Commit(ctx, msg); err != nil {
-				return err
+		for attempt := 1; ; attempt++ {
+			err = w.Handle(ctx, msg)
+			if err == nil {
+				if err = w.Source.Commit(ctx, msg); err != nil {
+					return err
+				}
+				break
 			}
-			continue
-		}
-		event, decodeErr := DecodeEvent(msg.Value)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		attempt := w.failureCount(event.EventID)
-		if attempt >= cfg.MaxAttempts {
-			if w.DLQ == nil {
-				return fmt.Errorf("dlq publisher unavailable: %w", err)
+			event, decodeErr := DecodeEvent(msg.Value)
+			if decodeErr != nil {
+				if w.DLQ == nil {
+					return errors.New("dlq publisher unavailable")
+				}
+				key := digest(msg.Value)
+				payload, _ := json.Marshal(map[string]any{"schema_version": 1, "message_sha256": key, "reason": "invalid_usage_event", "partition": msg.Partition, "offset": msg.Offset})
+				if err := w.DLQ.Publish(ctx, DLQTopic, key, payload); err != nil {
+					return err
+				}
+				if err := w.Source.Commit(ctx, msg); err != nil {
+					return err
+				}
+				break
 			}
-			dlq, marshalErr := (DeadLetterEvent{SchemaVersion: 1, Event: event, Reason: safeDLQReason(err)}).MarshalSafe()
-			if marshalErr != nil {
-				return marshalErr
+			if attempt >= cfg.MaxAttempts {
+				if w.DLQ == nil {
+					return fmt.Errorf("dlq publisher unavailable: %w", err)
+				}
+				dlq, marshalErr := (DeadLetterEvent{SchemaVersion: 1, Event: event, Reason: safeDLQReason(err)}).MarshalSafe()
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if pubErr := w.DLQ.Publish(ctx, DLQTopic, event.EventID, dlq); pubErr != nil {
+					return pubErr
+				}
+				if err = w.Source.Commit(ctx, msg); err != nil {
+					return err
+				}
+				break
 			}
-			if pubErr := w.DLQ.Publish(ctx, DLQTopic, event.EventID, dlq); pubErr != nil {
-				return pubErr
+			select {
+			case <-time.After(RetryDelay(cfg.RetryBase, cfg.RetryMax, attempt)):
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			if err = w.Source.Commit(ctx, msg); err != nil {
-				return err
-			}
-			continue
-		}
-		select {
-		case <-time.After(RetryDelay(cfg.RetryBase, cfg.RetryMax, attempt)):
-		case <-ctx.Done():
-			return ctx.Err()
 		}
 	}
-}
-func (w *Worker) failureCount(eventID string) int {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.failures[eventID]++
-	return w.failures[eventID]
 }
 
 type KafkaWriter struct{ Writer *segmentkafka.Writer }

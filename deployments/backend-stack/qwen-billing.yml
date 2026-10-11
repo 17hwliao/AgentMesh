@@ -1,0 +1,9 @@
+# Optional balance settlement. Supply a verified, non-expired account tariff
+# at secrets/billing_catalog, then mount after qwen.yml. No tariff is invented.
+services:
+  gateway:
+    environment:
+      AGENTMESH_BILLING_CATALOG_FILE: /run/secrets/billing_catalog
+    secrets: [billing_catalog]
+secrets:
+  billing_catalog: {file: ./secrets/billing_catalog}

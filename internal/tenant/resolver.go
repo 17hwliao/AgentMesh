@@ -16,16 +16,39 @@ type Resolver struct {
 	providers []provider.Provider
 	byName    map[string]provider.Provider
 	mockMode  bool
+	inactive  map[string]bool
 }
 
 // NewResolver accepts only routes that are ordered subsets of the global
 // runtime selection. The mock mode remains mutually exclusive with real
 // adapters, matching runtime.Build's 002 safety contract.
 func NewResolver(ctx context.Context, store Store, logical []string, providers []provider.Provider) (*Resolver, error) {
+	return NewResolverWithInactive(ctx, store, logical, providers, nil)
+}
+
+// NewResolverWithInactive tolerates persisted routes referring to explicitly
+// disabled, known real adapters. Such routes remain unavailable as a whole;
+// they are never silently reordered, trimmed or moved to a different provider.
+func NewResolverWithInactive(ctx context.Context, store Store, logical []string, providers []provider.Provider, inactive []string) (*Resolver, error) {
 	if ctx == nil || store == nil || len(logical) == 0 || len(providers) == 0 {
 		return nil, errors.New("tenant_route_configuration_invalid")
 	}
 	r := &Resolver{store: store, logical: append([]string(nil), logical...), providers: append([]provider.Provider(nil), providers...), byName: map[string]provider.Provider{}}
+	r.inactive = map[string]bool{}
+	for _, name := range inactive {
+		if name != "ark" && name != "ollama" && name != "compatible" {
+			return nil, errors.New("tenant_route_configuration_invalid")
+		}
+		if r.inactive[name] {
+			return nil, errors.New("tenant_route_configuration_invalid")
+		}
+		for _, active := range logical {
+			if active == name || active == "mock" {
+				return nil, errors.New("tenant_route_configuration_invalid")
+			}
+		}
+		r.inactive[name] = true
+	}
 	if len(logical) == 1 && logical[0] == "mock" {
 		r.mockMode = true
 		return r, r.validateDeclaredRoutes(ctx)
@@ -154,7 +177,25 @@ func (r *Resolver) validateDeclaredRoutes(ctx context.Context) error {
 	}
 	for _, route := range state.Routes {
 		if !r.validRoute(route) {
-			return errors.New("tenant_route_configuration_invalid")
+			// Validate the active portion and every inactive name, while keeping
+			// the full persisted route blocked at request resolution.
+			var active []string
+			seen := map[string]bool{}
+			if len(route) == 0 {
+				return errors.New("tenant_route_configuration_invalid")
+			}
+			for _, name := range route {
+				if seen[name] {
+					return errors.New("tenant_route_configuration_invalid")
+				}
+				seen[name] = true
+				if !r.inactive[name] {
+					active = append(active, name)
+				}
+			}
+			if len(active) > 0 && !r.validRoute(active) {
+				return errors.New("tenant_route_configuration_invalid")
+			}
 		}
 	}
 	return nil

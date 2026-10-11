@@ -59,6 +59,11 @@ type MySQLStore struct {
 	dummy [sha256.Size]byte
 }
 
+func (s *MySQLStore) Health(ctx context.Context) error {
+	var n uint64
+	return s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM tenants").Scan(&n)
+}
+
 func NewMySQLStore(db mysqlReadDatabase) *MySQLStore { return &MySQLStore{db: db} }
 
 func (s *MySQLStore) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (Tenant, bool) {

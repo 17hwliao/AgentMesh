@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"agentmesh/internal/gateway"
 	"agentmesh/internal/provider"
 	"agentmesh/internal/ratelimit"
+	"agentmesh/internal/sse"
 	"agentmesh/internal/tenant"
 )
 
@@ -44,6 +46,9 @@ type Config struct {
 	Concurrency  int `json:"concurrency"`
 	RateRequests int `json:"rate_limit_requests"`
 	RateBurst    int `json:"rate_limit_burst"`
+	StreamChunks int `json:"stream_chunks,omitempty"`
+	ChunkBytes   int `json:"chunk_bytes,omitempty"`
+	ReadDelayMS  int `json:"read_delay_ms,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -70,6 +75,7 @@ type Report struct {
 	Summary        Summary         `json:"summary"`
 	RateLimit      RateLimitReport `json:"rate_limit"`
 	ValidationCode string          `json:"validation_code,omitempty"`
+	Resources      ResourceReport  `json:"resources"`
 }
 
 type Round struct {
@@ -107,11 +113,13 @@ type RateLimitReport struct {
 	ProviderAttempts int            `json:"provider_attempts"`
 }
 
-func Run(config Config, environment Environment) (Report, error) {
+func Run(config Config, environment Environment) (report Report, runError error) {
 	if err := valid(config); err != nil {
 		return Report{}, err
 	}
-	report := Report{
+	monitor := startResources()
+	defer func() { report.Resources = monitor.finish() }()
+	report = Report{
 		Scope:      Scope,
 		StartedAt:  time.Now().UTC(),
 		GitCommit:  environment.Commit,
@@ -122,10 +130,10 @@ func Run(config Config, environment Environment) (Report, error) {
 		GOMAXPROCS: runtime.GOMAXPROCS(0),
 		Config:     config,
 	}
-	server, key, _ := newServer(nil)
+	server, key, _ := newServer(nil, config)
 	defer server.Close()
 	client := server.Client()
-	report.Warmup = runRound(client, server.URL, key, config.Warmup, config.Concurrency)
+	report.Warmup = runRound(client, server.URL, key, config.Warmup, config.Concurrency, config)
 	if report.Warmup.Summary.Failed != 0 {
 		report.FinishedAt = time.Now().UTC()
 		report.ValidationCode = "warmup_failed"
@@ -133,7 +141,7 @@ func Run(config Config, environment Environment) (Report, error) {
 	}
 	report.Rounds = make([]Round, 0, config.Rounds)
 	for range config.Rounds {
-		round := runRound(client, server.URL, key, config.Requests, config.Concurrency)
+		round := runRound(client, server.URL, key, config.Requests, config.Concurrency, config)
 		report.Rounds = append(report.Rounds, round)
 	}
 	report.Summary = summarizeRounds(report.Rounds)
@@ -154,13 +162,23 @@ func valid(config Config) error {
 	if config.Warmup < 0 || config.Rounds <= 0 || config.Requests <= 0 || config.Concurrency <= 0 || config.RateRequests <= 0 || config.RateBurst <= 0 {
 		return errors.New("benchmark_configuration_invalid")
 	}
+	if config.StreamChunks < 0 || config.StreamChunks > 64 || config.ChunkBytes < 0 || config.ChunkBytes > 64 || config.StreamChunks*config.ChunkBytes > 4096 || config.ReadDelayMS < 0 || config.ReadDelayMS > 20 || (config.StreamChunks == 0) != (config.ChunkBytes == 0) || config.Warmup > 10000 || config.Rounds > 20 || config.Requests > 10000 || config.Concurrency > 128 || config.RateRequests > 10000 {
+		return errors.New("benchmark_configuration_invalid")
+	}
 	return nil
 }
 
-func newServer(gate ratelimit.Gate) (*httptest.Server, string, *provider.Mock) {
+func newServer(gate ratelimit.Gate, workload ...Config) (*httptest.Server, string, *provider.Mock) {
 	key := randomKey()
 	store := tenant.NewMemory([]tenant.Tenant{{ID: "benchmark-tenant", Enabled: true, ModelRoutes: map[string][]string{"mock-model": {"mock"}}}}, []tenant.APIKeyRecord{{Prefix: key[:8], Hash: sha256.Sum256([]byte(key)), TenantID: "benchmark-tenant", Enabled: true}})
-	mock := provider.NewMock(provider.MockConfig{Name: "benchmark-mock", Chunks: []string{"benchmark response"}, FailAfterChunks: -1})
+	chunks := []string{"benchmark response"}
+	if len(workload) > 0 && workload[0].StreamChunks > 0 {
+		chunks = make([]string, workload[0].StreamChunks)
+		for i := range chunks {
+			chunks[i] = strings.Repeat("x", workload[0].ChunkBytes)
+		}
+	}
+	mock := provider.NewMock(provider.MockConfig{Name: "benchmark-mock", Chunks: chunks, FailAfterChunks: -1})
 	resolver, err := tenant.NewResolver(context.Background(), store, []string{"mock"}, []provider.Provider{mock})
 	if err != nil {
 		panic(err)
@@ -179,7 +197,7 @@ func randomKey() string {
 	return hex.EncodeToString(bytes)
 }
 
-func runRound(client *http.Client, baseURL, key string, count, concurrency int) Round {
+func runRound(client *http.Client, baseURL, key string, count, concurrency int, workload ...Config) Round {
 	started := time.Now()
 	samples := make([]Sample, count)
 	jobs := make(chan int)
@@ -189,7 +207,7 @@ func runRound(client *http.Client, baseURL, key string, count, concurrency int) 
 		go func() {
 			defer workers.Done()
 			for index := range jobs {
-				samples[index] = chat(client, baseURL, key, index)
+				samples[index] = chat(client, baseURL, key, index, workload...)
 			}
 		}()
 	}
@@ -206,9 +224,9 @@ func runRound(client *http.Client, baseURL, key string, count, concurrency int) 
 	return Round{Samples: samples, Summary: summary}
 }
 
-func chat(client *http.Client, baseURL, key string, index int) Sample {
+func chat(client *http.Client, baseURL, key string, index int, workload ...Config) Sample {
 	started := time.Now()
-	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"mock-model","messages":[{"role":"user","content":"benchmark"}],"stream":true}`))
+	request, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", bytes.NewBufferString(`{"model":"mock-model","messages":[{"role":"user","content":"benchmark"}],"stream":true,"max_tokens":4096}`))
 	if err != nil {
 		return Sample{Index: index, DurationMS: elapsedMS(started), ResultCode: "request_construction_failed"}
 	}
@@ -218,18 +236,38 @@ func chat(client *http.Client, baseURL, key string, index int) Sample {
 	if err != nil {
 		return Sample{Index: index, DurationMS: elapsedMS(started), ResultCode: "http_client_failed"}
 	}
-	payload, readErr := io.ReadAll(response.Body)
-	_ = response.Body.Close()
+	defer response.Body.Close()
 	sample := Sample{Index: index, DurationMS: elapsedMS(started), Status: response.StatusCode}
-	if readErr != nil {
-		sample.ResultCode = "response_read_failed"
-		return sample
-	}
 	if response.StatusCode == http.StatusOK {
-		sample.SSEComplete = bytes.Contains(payload, []byte("data: [DONE]"))
+		reader := sse.NewReader(response.Body)
+		for {
+			event, e := reader.Next()
+			if e != nil {
+				break
+			}
+			if len(workload) > 0 && workload[0].ReadDelayMS > 0 {
+				time.Sleep(time.Duration(workload[0].ReadDelayMS) * time.Millisecond)
+			}
+			if strings.TrimSpace(event.Data) == "[DONE]" {
+				sample.SSEComplete = true
+				break
+			}
+			var value struct {
+				Error json.RawMessage `json:"error"`
+			}
+			if event.Type == "error" || json.Unmarshal([]byte(event.Data), &value) != nil || (len(value.Error) > 0 && string(value.Error) != "null") {
+				break
+			}
+		}
+		sample.DurationMS = elapsedMS(started)
 		if !sample.SSEComplete {
 			sample.ResultCode = "sse_incomplete"
 		}
+		return sample
+	}
+	payload, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+	if readErr != nil {
+		sample.ResultCode = "response_read_failed"
 		return sample
 	}
 	var body struct {

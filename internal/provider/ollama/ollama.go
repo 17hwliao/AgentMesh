@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/url"
-	"strings"
 	"time"
 
 	"agentmesh/internal/provider"
+	"agentmesh/internal/providerconfig"
+	"agentmesh/internal/telemetry"
 )
 
 type Config struct {
@@ -27,20 +27,21 @@ type Adapter struct {
 }
 
 func New(config Config, client *http.Client) (*Adapter, error) {
-	baseURL, err := validBaseURL(config.BaseURL)
-	if err != nil || strings.TrimSpace(config.Model) == "" {
+	baseURL, err := providerconfig.BaseURL(config.BaseURL)
+	if err != nil || !providerconfig.ModelValid(config.Model) {
 		return nil, errors.New("invalid Ollama configuration")
 	}
 	if client == nil {
 		// Local models can spend tens of seconds loading or evaluating a larger
 		// evidence prompt. The gateway still propagates caller cancellation; this
 		// is only the upstream safety ceiling, not a request that cannot cancel.
-		client = &http.Client{Timeout: 90 * time.Second}
+		client = &http.Client{Timeout: 90 * time.Second, Transport: telemetry.Transport{}}
 	}
 	return &Adapter{baseURL: baseURL, model: config.Model, client: client}, nil
 }
 
-func (a *Adapter) Name() string { return "ollama" }
+func (a *Adapter) Name() string               { return "ollama" }
+func (a *Adapter) BillingModel(string) string { return a.model }
 
 func (a *Adapter) Health(ctx context.Context) error {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, a.baseURL+"/api/tags", nil)
@@ -59,7 +60,15 @@ func (a *Adapter) Health(ctx context.Context) error {
 }
 
 func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit provider.Emit) error {
-	body, err := json.Marshal(map[string]any{"model": a.model, "messages": input.Messages, "stream": true})
+	limit := input.MaxTokens
+	if limit <= 0 {
+		limit = 1024
+	}
+	options := map[string]any{"num_predict": limit}
+	if input.Temperature != nil {
+		options["temperature"] = *input.Temperature
+	}
+	body, err := json.Marshal(map[string]any{"model": a.model, "messages": input.Messages, "stream": true, "options": options})
 	if err != nil {
 		return provider.ErrProtocol
 	}
@@ -87,8 +96,10 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
-			Done  bool   `json:"done"`
-			Error string `json:"error"`
+			Done            bool   `json:"done"`
+			Error           string `json:"error"`
+			PromptEvalCount *int   `json:"prompt_eval_count"`
+			EvalCount       *int   `json:"eval_count"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil || event.Error != "" {
 			return provider.ErrUpstream
@@ -99,6 +110,14 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			}
 		}
 		if event.Done {
+			if event.PromptEvalCount != nil && event.EvalCount != nil {
+				if *event.PromptEvalCount < 0 || *event.EvalCount < 0 {
+					return provider.ErrProtocol
+				}
+				if err := emit(provider.Chunk{Usage: &provider.Usage{InputTokens: *event.PromptEvalCount, OutputTokens: *event.EvalCount}}); err != nil {
+					return err
+				}
+			}
 			return nil
 		}
 	}
@@ -109,12 +128,4 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 		return provider.ErrUpstream
 	}
 	return provider.ErrProtocol
-}
-
-func validBaseURL(raw string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("invalid base URL")
-	}
-	return strings.TrimRight(parsed.String(), "/"), nil
 }

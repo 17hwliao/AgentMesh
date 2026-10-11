@@ -3,6 +3,7 @@
 package main
 
 import (
+	"agentmesh/internal/configenv"
 	"context"
 	"errors"
 	"fmt"
@@ -34,6 +35,9 @@ type config struct {
 }
 
 func main() {
+	if err := configenv.LoadSecretFiles(); err != nil {
+		log.Fatal("secret_configuration_failed")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(os.Getenv, ctx); err != nil {

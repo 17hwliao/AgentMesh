@@ -1,0 +1,10 @@
+# Private active-alert dashboard. Configure an authorized external destination
+# and secret file before claiming off-host notifications; none is guessed.
+route:
+  receiver: local-operations
+  group_by: [alertname,service]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+receivers:
+  - name: local-operations
