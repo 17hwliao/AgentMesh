@@ -2,14 +2,22 @@ import argparse
 import base64
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec=importlib.util.spec_from_file_location('console_setup',Path(__file__).with_name('console-setup.py'))
 module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
 
 class ConsoleSetupTests(unittest.TestCase):
+    def setUp(self):
+        # Provisioning tests model an allowed operator. CI's actual UID need not
+        # equal the container UID; rejection of other UIDs is tested separately.
+        operator=mock.patch.object(module.os,'geteuid',return_value=1000,create=True)
+        operator.start();self.addCleanup(operator.stop)
+
     def args(self,root):
         (root/'compose.yml').write_text('services: {}',encoding='utf-8')
         (root/'.env').write_text('KEEP_ME=value\nAPP_DOMAIN=old.unit.test\n',encoding='utf-8')
@@ -43,5 +51,14 @@ class ConsoleSetupTests(unittest.TestCase):
                 root=Path(temporary);args=self.args(root);setattr(args,field,value)
                 with self.assertRaises(ValueError):module.configure(args)
                 self.assertFalse((root/'console-private').exists())
+
+    @unittest.skipIf(os.name=='nt','POSIX UID guard is exercised in Linux')
+    def test_other_uid_is_refused_before_private_writes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);args=self.args(root)
+            with mock.patch.object(module.os,'geteuid',return_value=1001):
+                with self.assertRaisesRegex(ValueError,'root or UID 1000'):
+                    module.configure(args)
+            self.assertFalse((root/'console-private').exists())
 
 if __name__=='__main__':unittest.main()
