@@ -1,11 +1,14 @@
 {
   "files": [
     "Acceptance.Caddyfile",
+    "CONSOLES.md",
     "Caddyfile",
+    "Caddyfile.consoles",
     "Proxy.Dockerfile",
     "QWEN-RUNBOOK.md",
     "README.md",
     "ROADMAP-RUNBOOK.md",
+    "WEB-PRODUCTION.md",
     "acceptance-evidence.py",
     "acceptance-expanded.py",
     "acceptance-extensions.py",
@@ -21,6 +24,8 @@
     "check-reader-bootstrap.py",
     "commission.py",
     "compose.yml",
+    "console-setup.py",
+    "consoles.yml",
     "es-start.sh",
     "extensions-acceptance.yml",
     "extensions.yml",
@@ -48,6 +53,7 @@
     "render-kubernetes.py",
     "setup-extensions.py",
     "setup.py",
+    "test-console-setup.py",
     "test-qwen-setup.py",
     "verify-local-improvements.py"
   ]

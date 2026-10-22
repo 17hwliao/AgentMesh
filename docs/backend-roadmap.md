@@ -29,10 +29,15 @@
 
 全局 AGENTMESH_SEMANTIC_CACHE=true 后，客户端仍须显式提交 X-AgentMesh-Cache: semantic 和 X-AgentMesh-Cache-Namespace: 知识/业务版本。仅 temperature=0、单 user 或 system+user 适用；租户、模型、路由、provider配置、embedding模型、输出上限、完整system及namespace共同隔离。有限向量、阈值≥0.995、数字序列匹配、最多128条/租户、默认10分钟TTL。只缓存完整已知用量的成功回答；Redis/embedding失败回到供应商路径。
 
-缓存命中不会再次请求聊天供应商，新增聊天费用为0，账单状态cache_hit。缓存 embedding 当前由本地 Ollama 提供；embeddings 仍走原预算体系，不属于新的精确人民币收费接口。语义相似不证明问题等价，不能用于SQL审批、转账、实时库存等要求严格一致的流程；这些客户端不要开启缓存。修改知识或模型配置时换 namespace/SEMANTIC_CACHE_VERSION。
+缓存命中不会再次请求聊天供应商，新增聊天费用为0，账单状态cache_hit。缓存 embedding 可选择本地 Ollama 或显式配置的 OpenAI 兼容云端模型；启用 `AGENTMESH_EMBEDDING_BILLING=true` 和有效 embedding 价格项后，云向量按每个上游批次的实际输入 usage 从同一租户人民币钱包结算，包含内部语义缓存查找；未启用时保留原预算单位。金额向量接口只接受 `embedding` 别名，余额不足返回 402；聊天接口不接受此别名。公开向量接口最多同时执行 8 个请求，超出返回 429 和 Retry-After。缺失用量进入 pending_reconciliation，不能估算扣费或自动释放已开始的调用。语义相似不证明问题等价，不能用于SQL审批、转账、实时库存等要求严格一致的流程；这些客户端不要开启缓存。修改知识或模型配置时换 namespace/SEMANTIC_CACHE_VERSION。
 
 ## 独立模型执行器
 
 model-runner 单独持有供应商凭据，gateway 只持控制库/钱包及 mTLS 调用资料。双方校验内部 CA、证书/SAN、至少32字符service token；TLS≥1.3，128KiB消息、32并发、2分钟流期限，取消沿调用链传播。Health验证传输，不发收费探测。启动时比对执行器实际 model 与价格；每次RPC绑定 expected_upstream_model，返回流必须匹配并明确completed，截断EOF失败。
 
 默认Linux部署仍为单机Compose；可选配置、Kubernetes结构验证、证书轮换、价格续期、余额开通和备份见联合目录 deploy/ROADMAP-RUNBOOK.md。真实模型质量、实时可用性和正式收费单必须由目标账户联调。
+
+
+## 上下文与基础识图
+
+已实现受限的文本/图片多轮 messages 转发、显式视觉别名、图片预算准入及 HTTP/mTLS 传递，现有文本缓存不处理图片。OpenCode 工具循环保留设计层，不宣称完整 Chat Completions/编程客户端兼容；阅读 [协议与上下文说明](gateway-protocol-design.md)。

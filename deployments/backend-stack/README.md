@@ -1,3 +1,5 @@
+> 双控制台部署请先阅读 [WEB-PRODUCTION.md](WEB-PRODUCTION.md)。当前 API 能力以仓库 docs/openapi.json、客户端接入文档及对应扩展手册为准；以下保留基础拓扑与运维步骤。
+
 # Linux 单机后端部署与验收
 
 > 初次使用千问的独立配置见 [千问部署手册](QWEN-RUNBOOK.md)：聊天及 SQL 分析走百炼，embedding 继续使用 Ollama；可选余额收费无需启动全部扩展服务。
@@ -55,7 +57,7 @@ ssh -N -L 18080:127.0.0.1:18080 your-user@your-server
 
 新租户 POST `/admin/tenants`：`{"tenant_id":"demo","model_routes":{"sql-review":["ark"],"embedding":["ollama"]}}`。初始额度默认 10000000 单位，持久记录 `initial` grant。已开通 operator 的 initial 金额必须与启动配置保持一致；不要通过改启动金额给已有租户充值，否则会被幂等冲突检查拒绝启动。补充额度 POST `/admin/quota/grants`：`{"tenant_id":"demo","grant_id":"credit-2026-001","units":10000}`。同 grant_id 重试不会再加额度，修改额度返回 409。详细请求契约分别见两个项目 `docs/backend-release.md`。
 
-网关额度是预算单位，非精确 token 账单。默认每请求预留 4096；无法确认用量时保守扣预留全额。已转发输出由 rune 上限约束，同时给上游设置生成限额。仅支持聊天 SSE；默认 max_tokens=1024，上限 4096；stream=false 会拒绝。查询 trace 只返回所属租户的最近 128 条内存记录。SQL 报告与状态持久保存且需要独立认证。
+基础模式网关额度是预算单位；启用 qwen-billing.yml 后按上游可信 usage 和有效价目表进行人民币余额结算。默认每请求预留 4096；无法确认用量时保守扣预留全额。已转发输出由 rune 上限约束，同时给上游设置生成限额。支持流式及非流式 Chat Completions，并提供受限 Messages 转换；默认 max_tokens=1024，上限 4096。客户端工具与图片能力以模型目录声明和已验证范围为准。查询 trace 只返回所属租户的最近 128 条内存记录。SQL 报告与状态持久保存且需要独立认证。
 
 ## 3. 原生 GitHub 联调（可选）
 
@@ -83,6 +85,8 @@ docker compose start gateway usage-relay usage-worker sentinel-api sentinel-rela
 ## 5. 备份、恢复、升级
 
 Linux `sh backup.sh` 会停写者、导出控制库与两个影子库、Redis RDB、SHA256 清单，然后恢复进程。备份目录 0700/文件受 umask077 保护。secrets 需单独复制到加密离机存储，SQL 文本/报告和备份都视为私有数据。脚本需要一段停写窗口；对备份做实际还原演练，不能仅看 dump 成功。
+
+脚本沿用显式设置的 `COMPOSE_FILE` 与 `COMPOSE_PROJECT_NAME`，包括千问/计费覆盖文件；未设置时使用原基础或 `BACKUP_EXTENSIONS` 组合。仅停止并恢复开始前正在运行的写服务，停止中途失败也尝试恢复这些服务，不主动启用原本关闭的 worker。MySQL 整库 dump 包含私有图片 BLOB，备份同样需要加密和租户数据保护。
 
 在**新项目名、新数据卷、独立网络**恢复演练：生成匹配/安全替换的 secrets，启动三个 MySQL 与 Redis；通过容器内 mysql 从各 SQL 文件导入相应库，再运行幂等迁移。恢复旧 Redis 数据需遵守 Redis RDB/AOF 加载规则；推荐将恢复后的 MySQL grants/账本作为权威，在全部 API 停止时逐租户 quota-rebuild，避免误把新空 AOF 当成已恢复钱包。创建 topics 并启动 relay/worker，依赖 MySQL 重投修复缺少 Kafka 历史，不依赖恢复旧 consumer offset。
 

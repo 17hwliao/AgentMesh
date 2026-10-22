@@ -1,6 +1,7 @@
 package reservation
 
 import (
+	"agentmesh/internal/dbpool"
 	"context"
 	"database/sql"
 	"errors"
@@ -157,6 +158,7 @@ func OpenMySQLRepository(dsn string, now func() time.Time) (*SQLRepository, *sql
 	if err != nil {
 		return nil, nil, err
 	}
+	dbpool.Configure(db)
 	return newMySQLRepository(db, now), db, nil
 }
 

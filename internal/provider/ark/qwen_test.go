@@ -43,7 +43,7 @@ func TestQwenStreamContract(t *testing.T) {
 				t.Fatal(err)
 			}
 			var chunks []provider.Chunk
-			err = a.Stream(context.Background(), provider.ChatRequest{Model: "sql-review", MaxTokens: 32}, func(c provider.Chunk) error { chunks = append(chunks, c); return nil })
+			err = a.Stream(context.Background(), provider.ChatRequest{Model: "sql-review", MaxTokens: 32, Messages: []provider.Message{{Role: "user", Content: "hello"}}}, func(c provider.Chunk) error { chunks = append(chunks, c); return nil })
 			if err != nil || len(chunks) != 2 || chunks[0].Delta != "OK" || chunks[1].Usage == nil || *chunks[1].Usage != (provider.Usage{InputTokens: 12, OutputTokens: 7, CachedInputTokens: 4}) {
 				t.Fatalf("chunks=%+v err=%v", chunks, err)
 			}

@@ -41,6 +41,10 @@ var numbers = regexp.MustCompile(`[0-9]+(?:[.,][0-9]+)*`)
 
 func (c *Cache) Prepare(ctx context.Context, tenant, namespace, route string, r provider.ChatRequest) (Prepared, error) {
 	var result Prepared
+	// Image history and structured contents cannot share a text-only cache key.
+	if provider.HasParts(r.Messages) || provider.HasTools(r) || len(r.ResponseFormat) > 0 || len(r.Stop) > 0 || r.Seed != nil || r.TopP != nil {
+		return result, errors.New("cache_ineligible")
+	}
 	if c == nil || c.Redis == nil || c.Embedder == nil || c.Version == "" || route == "" || c.EmbeddingModel == "" || c.Threshold < .995 || c.Threshold > 1 || c.TTL < time.Minute || c.TTL > time.Hour || !namespacePattern.MatchString(namespace) || !namespacePattern.MatchString(tenant) || r.Temperature == nil || *r.Temperature != 0 || len(r.Messages) == 0 || len(r.Messages) > 2 {
 		return result, errors.New("cache_ineligible")
 	}

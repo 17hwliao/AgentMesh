@@ -60,6 +60,18 @@ func (a *Adapter) Health(ctx context.Context) error {
 }
 
 func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit provider.Emit) error {
+	if provider.ValidateChat(input) != nil {
+		return provider.ErrProtocol
+	}
+	if provider.HasImages(input.Messages) || provider.HasTools(input) || len(input.ResponseFormat) > 0 || input.ParallelToolCalls != nil || len(input.ToolChoice) > 0 {
+		return provider.ErrUnsupportedInput
+	}
+	// Native Ollama's text adapter does not accept OpenAI content-part arrays.
+	messages := append([]provider.Message(nil), input.Messages...)
+	for i := range messages {
+		messages[i].Content = messages[i].Text()
+		messages[i].Parts = nil
+	}
 	limit := input.MaxTokens
 	if limit <= 0 {
 		limit = 1024
@@ -68,7 +80,21 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 	if input.Temperature != nil {
 		options["temperature"] = *input.Temperature
 	}
-	body, err := json.Marshal(map[string]any{"model": a.model, "messages": input.Messages, "stream": true, "options": options})
+	if input.TopP != nil {
+		options["top_p"] = *input.TopP
+	}
+	if input.Seed != nil {
+		options["seed"] = *input.Seed
+	}
+	if len(input.Stop) > 0 && string(input.Stop) != "null" {
+		var stop any
+		_ = json.Unmarshal(input.Stop, &stop)
+		if text, ok := stop.(string); ok {
+			stop = []string{text}
+		}
+		options["stop"] = stop
+	}
+	body, err := json.Marshal(map[string]any{"model": a.model, "messages": messages, "stream": true, "options": options})
 	if err != nil {
 		return provider.ErrProtocol
 	}

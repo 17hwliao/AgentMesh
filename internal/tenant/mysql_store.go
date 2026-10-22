@@ -24,7 +24,7 @@ WHERE r.tenant_id = ? AND t.enabled = TRUE ORDER BY r.model, r.ordinal`
 
 const allRoutesMySQL = `SELECT r.tenant_id, r.model, r.provider FROM tenant_model_routes r
 JOIN tenants t ON t.tenant_id = r.tenant_id
-WHERE t.enabled = TRUE ORDER BY r.tenant_id, r.model, r.ordinal`
+ORDER BY r.tenant_id, r.model, r.ordinal`
 
 const identityCountsMySQL = `SELECT
   (SELECT COUNT(*) FROM tenants),
@@ -67,13 +67,23 @@ func (s *MySQLStore) Health(ctx context.Context) error {
 func NewMySQLStore(db mysqlReadDatabase) *MySQLStore { return &MySQLStore{db: db} }
 
 func (s *MySQLStore) Authenticate(ctx context.Context, prefix string, digest [sha256.Size]byte) (Tenant, bool) {
+	value, ok, _ := s.AuthenticateChecked(ctx, prefix, digest)
+	return value, ok
+}
+
+// AuthenticateChecked preserves dependency errors instead of misreporting an
+// exhausted/unavailable database as an invalid API key.
+func (s *MySQLStore) AuthenticateChecked(ctx context.Context, prefix string, digest [sha256.Size]byte) (Tenant, bool, error) {
 	if ctx == nil || ctx.Err() != nil || s == nil || s.db == nil {
-		return Tenant{}, false
+		return Tenant{}, false, errors.New("identity_unavailable")
 	}
 	var hash []byte
 	var keyEnabled, tenantEnabled bool
 	var tenantID string
 	err := s.db.QueryRowContext(ctx, authenticateMySQL, prefix).Scan(&hash, &keyEnabled, &tenantID, &tenantEnabled)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Tenant{}, false, errors.New("identity_unavailable")
+	}
 	target := s.dummy
 	found := err == nil && len(hash) == sha256.Size
 	if found {
@@ -81,9 +91,9 @@ func (s *MySQLStore) Authenticate(ctx context.Context, prefix string, digest [sh
 	}
 	matched := subtle.ConstantTimeCompare(digest[:], target[:]) == 1
 	if !found || !matched || !keyEnabled || !tenantEnabled {
-		return Tenant{}, false
+		return Tenant{}, false, nil
 	}
-	return Tenant{ID: tenantID, Enabled: true}, true
+	return Tenant{ID: tenantID, Enabled: true}, true, nil
 }
 
 func (s *MySQLStore) Route(ctx context.Context, tenantID, model string) ([]string, bool) {

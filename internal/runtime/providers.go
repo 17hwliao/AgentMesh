@@ -3,6 +3,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -45,14 +46,42 @@ func Build(orderRaw string, lookup func(string) string) ([]provider.Provider, er
 		}
 		return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
 	}
+	var vision, tools []string
+	for key, dest := range map[string]*[]string{"COMPATIBLE_VISION_MODELS": &vision, "COMPATIBLE_TOOL_MODELS": &tools} {
+		if raw := lookup(key); raw != "" {
+			if json.Unmarshal([]byte(raw), dest) != nil || len(*dest) == 0 || len(*dest) > 32 {
+				return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
+			}
+			seen := map[string]bool{}
+			for _, alias := range *dest {
+				valid := false
+				for _, b := range bindings {
+					if b.Name == "compatible" && b.Models[alias] != "" {
+						valid = true
+					}
+				}
+				if !valid || seen[alias] {
+					return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
+				}
+				seen[alias] = true
+			}
+		}
+	}
 	if target := lookup("AGENTMESH_RUNNER_GRPC_TARGET"); target != "" {
-		conn, e := securegrpc.Dial(target, securegrpc.Env(lookup, "AGENTMESH_GRPC"))
+		cfg := securegrpc.Env(lookup, "AGENTMESH_GRPC")
+		cfg.MaxMessageBytes = provider.MaxChatBytes + (64 << 10)
+		conn, e := securegrpc.Dial(target, cfg)
 		if e != nil {
 			return nil, &ConfigurationError{CodeProviderConfigurationInvalid}
 		}
 		var result []provider.Provider
 		for _, binding := range bindings {
-			result = append(result, modelrpc.NewAdapter(conn, binding.Name, binding.Models, binding.Model))
+			a := modelrpc.NewAdapter(conn, binding.Name, binding.Models, binding.Model)
+			if binding.Name == "compatible" {
+				a.VisionModels = append([]string(nil), vision...)
+				a.ToolModels = append([]string(nil), tools...)
+			}
+			result = append(result, a)
 		}
 		return result, nil
 	}
@@ -62,7 +91,7 @@ func Build(orderRaw string, lookup func(string) string) ([]provider.Provider, er
 		name := binding.Name
 		switch name {
 		case "compatible":
-			adapter, err := ark.New(ark.Config{BaseURL: lookup("COMPATIBLE_BASE_URL"), APIKey: lookup("COMPATIBLE_API_KEY"), Name: "compatible", Models: binding.Models, DisableThinking: binding.DisableThinking, UseMaxCompletionTokens: binding.UseMaxCompletionTokens}, nil)
+			adapter, err := ark.New(ark.Config{BaseURL: lookup("COMPATIBLE_BASE_URL"), APIKey: lookup("COMPATIBLE_API_KEY"), Name: "compatible", Models: binding.Models, DisableThinking: binding.DisableThinking, UseMaxCompletionTokens: binding.UseMaxCompletionTokens, VisionModels: vision, ToolModels: tools}, nil)
 			if err != nil {
 				return nil, configurationError(lookup("COMPATIBLE_BASE_URL"), lookup("COMPATIBLE_API_KEY"))
 			}

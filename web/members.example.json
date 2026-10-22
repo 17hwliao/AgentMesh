@@ -1,0 +1,10 @@
+{
+  "user_REPLACE_WITH_CLERK_USER_ID": {
+    "enabled": true,
+    "display_name": "项目体验用户",
+    "tenant_id": "REPLACE_WITH_EXISTING_TENANT",
+    "gateway_key_file": "/run/console-private/gateway_key",
+    "can_manage_keys": false,
+    "platform_admin": false
+  }
+}

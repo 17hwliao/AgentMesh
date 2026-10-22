@@ -33,7 +33,7 @@ func TestHTTPContractPublicAndTenantHealth(t *testing.T) {
 
 	protected := httptest.NewRecorder()
 	handler.ServeHTTP(protected, httptest.NewRequest(http.MethodGet, "/health/providers", nil))
-	if protected.Code != http.StatusUnauthorized || protected.Body.String() != "{\"error\":{\"code\":\"auth_failed\"}}\n" || mock.Calls() != 0 {
+	if protected.Code != http.StatusUnauthorized || !strings.Contains(protected.Body.String(), `"code":"auth_failed"`) || !strings.Contains(protected.Body.String(), `"message":"auth_failed"`) || mock.Calls() != 0 {
 		t.Fatalf("provider health status=%d body=%q calls=%d", protected.Code, protected.Body.String(), mock.Calls())
 	}
 

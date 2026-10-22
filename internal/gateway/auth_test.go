@@ -25,7 +25,7 @@ func TestAuthRejectsBeforeBodyDecodeAndProviderAttempt(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, chatPath, strings.NewReader(`not json`))
 	server.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != "{\"error\":{\"code\":\"auth_failed\"}}\n" || mock.Calls() != 0 {
+	if recorder.Code != http.StatusUnauthorized || recorder.Body.String() != "{\"error\":{\"code\":\"auth_failed\",\"message\":\"auth_failed\",\"type\":\"authentication_error\"}}\n" || mock.Calls() != 0 {
 		t.Fatalf("status=%d body=%q calls=%d", recorder.Code, recorder.Body.String(), mock.Calls())
 	}
 }

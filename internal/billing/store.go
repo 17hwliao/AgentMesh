@@ -113,15 +113,12 @@ func (s *Store) Credit(ctx context.Context, tenant, id, proof string, amount uin
 }
 
 func (s *Store) Begin(ctx context.Context, tenant, model string, messages []provider.Message) (reservation.StreamSession, error) {
-	if !identifier.MatchString(tenant) || !identifier.MatchString(model) || len(messages) == 0 || len(messages) > 128 || s.Health(ctx) != nil {
+	if !identifier.MatchString(tenant) || !identifier.MatchString(model) || len(messages) == 0 || len(messages) > 129 || s.Health(ctx) != nil {
 		return nil, ErrInvalid
 	}
 	// No guessed tokenizer is used for the fee. This byte bound is admission
 	// only; reservation covers the configured maximum token count per attempt.
-	size := 64 + 32*len(messages)
-	for _, m := range messages {
-		size += len(m.Content)
-	}
+	size := provider.InputBound(messages)
 	if size > 64<<10 {
 		return nil, ErrInvalid
 	}
@@ -159,6 +156,9 @@ func (s *Store) Begin(ctx context.Context, tenant, model string, messages []prov
 	defer tx.Rollback()
 	var balance, held uint64
 	if e = tx.QueryRowContext(ctx, "SELECT balance_nano,held_nano FROM billing_wallets WHERE tenant_id=? AND currency=? FOR UPDATE", tenant, s.Catalog.Currency).Scan(&balance, &held); e != nil {
+		if errors.Is(e, sql.ErrNoRows) {
+			return nil, ErrInsufficient
+		}
 		return nil, e
 	}
 	if balance < held || reserve > balance-held {

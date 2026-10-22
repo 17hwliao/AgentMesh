@@ -30,6 +30,7 @@ type Handler struct {
 	now       func() time.Time
 	quota     reservation.StreamGate
 	recorder  *observability.Recorder
+	slots     chan struct{}
 }
 
 func (h *Handler) SetResources(quota reservation.StreamGate, recorder *observability.Recorder) {
@@ -51,7 +52,7 @@ func NewHandler(store tenant.Store, providers []Provider) (*Handler, error) {
 		}
 		byName[provider.Name()] = provider
 	}
-	return &Handler{store: store, providers: byName, now: func() time.Time { return time.Now().UTC() }}, nil
+	return &Handler{store: store, providers: byName, now: func() time.Time { return time.Now().UTC() }, slots: make(chan struct{}, 8)}, nil
 }
 
 type request struct {
@@ -68,6 +69,11 @@ type response struct {
 	InputCount int             `json:"input_count"`
 	Dimension  int             `json:"dimension"`
 	DurationMS int64           `json:"duration_ms"`
+	Usage      *responseUsage  `json:"usage,omitempty"`
+}
+type responseUsage struct {
+	Prompt int `json:"prompt_tokens"`
+	Total  int `json:"total_tokens"`
 }
 
 type embeddingData struct {
@@ -86,6 +92,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, auth.CodeFailed)
 		return
 	}
+	select {
+	case h.slots <- struct{}{}:
+		defer func() { <-h.slots }()
+	default:
+		w.Header().Set("Retry-After", "1")
+		writeError(w, 429, "embedding_busy")
+		return
+	}
 	input, err := decodeRequest(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_embedding_request")
@@ -101,6 +115,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "embedding_provider_unavailable")
 		return
 	}
+	billed := false
+	if marker, ok := provider.(interface{ BillableModel(string) bool }); ok {
+		if !marker.BillableModel(input.Model) {
+			writeError(w, 400, "invalid_billable_embedding_model")
+			return
+		}
+		billed = true
+	}
 	traceID := newTraceID()
 	var trace *observability.Session
 	if h.recorder != nil {
@@ -115,7 +137,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 	w.Header().Set("X-AgentMesh-Trace-ID", traceID)
 	var session reservation.StreamSession
-	if h.quota != nil {
+	if h.quota != nil && !billed {
 		messages := make([]chatprovider.Message, len(input.Inputs))
 		for i, text := range input.Inputs {
 			messages[i] = chatprovider.Message{Role: "user", Content: text}
@@ -149,7 +171,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if trace != nil {
 		trace.Observe(router.AttemptEvent{Kind: router.AttemptStarted, Provider: provider.Name()})
 	}
-	vectors, err := provider.Embed(r.Context(), input.Model, input.Inputs)
+	receipt := &moneyReceipt{}
+	vectors, err := provider.Embed(context.WithValue(r.Context(), receiptKey{}, receipt), input.Model, input.Inputs)
+	if receipt.ID != "" {
+		w.Header().Set("X-AgentMesh-Billing-Request-ID", receipt.ID)
+	}
 	if err != nil {
 		if trace != nil {
 			trace.Observe(router.AttemptEvent{Kind: router.AttemptFinished, Provider: provider.Name(), Outcome: "failed"})
@@ -157,7 +183,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if session != nil {
 			_ = session.FinishAttempt(r.Context(), provider.Name(), "failed")
 		}
-		writeError(w, providerStatus(err), providerCode(err))
+		status, code := moneyError(err)
+		if status == 0 {
+			status = providerStatus(err)
+			code = providerCode(err)
+		}
+		writeError(w, status, code)
 		return
 	}
 	if err := validateVectorsForRequest(vectors, len(input.Inputs)); err != nil {
@@ -189,9 +220,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		data[index] = embeddingData{Object: "embedding", Embedding: vector, Index: index}
 	}
 	result := response{Object: "list", Model: input.Model, Data: data, TraceID: traceID, Provider: provider.Name(), InputCount: len(input.Inputs), Dimension: len(vectors[0]), DurationMS: h.now().Sub(started).Milliseconds()}
+	if receipt.Usage != nil {
+		result.Usage = &responseUsage{Prompt: receipt.Usage.InputTokens, Total: receipt.Usage.InputTokens}
+	}
 	resultCode = "success"
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+func (h *Handler) BillableModel(alias string) bool {
+	for _, p := range h.providers {
+		if b, ok := p.(interface{ BillableModel(string) bool }); ok && b.BillableModel(alias) {
+			return true
+		}
+	}
+	return false
 }
 
 type decodedRequest struct {

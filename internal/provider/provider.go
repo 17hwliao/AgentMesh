@@ -1,27 +1,40 @@
 // Package provider defines the small boundary between AgentMesh routing and a
-// model implementation. The first vertical slice intentionally supports only
-// streaming because the public endpoint is stream-only.
+// model implementation. Adapters stream internally; HTTP clients may request
+// streaming or a bounded aggregated response.
 package provider
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 // Message is an OpenAI-style chat message accepted by the local gateway.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string        `json:"role"`
+	Content    string        `json:"-"`
+	Parts      []ContentPart `json:"-"`
+	Name       string        `json:"-"`
+	ToolCallID string        `json:"-"`
+	ToolCalls  []ToolCall    `json:"-"`
 }
 
 // ChatRequest is input to one provider attempt. It contains no credentials or
-// tenant state in this mock-only stage.
+// tenant state. Identity and upstream credentials remain server-owned.
 type ChatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature *float64  `json:"temperature,omitempty"`
+	Model             string           `json:"model"`
+	Messages          []Message        `json:"messages"`
+	MaxTokens         int              `json:"max_tokens,omitempty"`
+	Temperature       *float64         `json:"temperature,omitempty"`
+	Tools             []ToolDefinition `json:"tools,omitempty"`
+	ToolChoice        json.RawMessage  `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool            `json:"parallel_tool_calls,omitempty"`
+	TopP              *float64         `json:"top_p,omitempty"`
+	Stop              json.RawMessage  `json:"stop,omitempty"`
+	ResponseFormat    json.RawMessage  `json:"response_format,omitempty"`
+	Seed              *int             `json:"seed,omitempty"`
 }
 
-// Usage is optional provider-observed usage. Billing semantics are deliberately
-// out of scope until the quota/reservation stage.
+// Usage is provider-observed usage; only verified actual usage settles money.
 type Usage struct {
 	InputTokens       int  `json:"input_tokens"`
 	OutputTokens      int  `json:"output_tokens"`
@@ -31,8 +44,10 @@ type Usage struct {
 
 // Chunk is one incremental stream result.
 type Chunk struct {
-	Delta string `json:"delta"`
-	Usage *Usage `json:"usage,omitempty"`
+	Delta        string          `json:"delta"`
+	Usage        *Usage          `json:"usage,omitempty"`
+	ToolCalls    []ToolCallDelta `json:"tool_calls,omitempty"`
+	FinishReason string          `json:"finish_reason,omitempty"`
 }
 
 // Emit forwards one chunk. Returning an error stops the provider attempt.

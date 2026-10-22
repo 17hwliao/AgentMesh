@@ -26,6 +26,33 @@ func TestBuildRejectsMissingRealConfigurationWithStableCode(t *testing.T) {
 	}
 }
 
+func TestToolAliasesRejectUnboundOrMalformedDeclarationsBeforeRemoteDial(t *testing.T) {
+	for _, raw := range []string{`["m"]`, `["unknown"]`, `["m","m"]`, `null`, `{}`, `[]`} {
+		values := map[string]string{"COMPATIBLE_BASE_URL": "https://example.com/v1", "COMPATIBLE_API_KEY": "fixture", "COMPATIBLE_MODELS": `{"m":"qwen"}`, "COMPATIBLE_TOOL_MODELS": raw}
+		ps, e := Build("compatible", func(k string) string { return values[k] })
+		if raw == `["m"]` {
+			if e != nil || !ps[0].(interface{ SupportsTools(string) bool }).SupportsTools("m") {
+				t.Fatal("tool capability not bound", e)
+			}
+		} else {
+			if e == nil {
+				t.Fatal("invalid declaration accepted", raw)
+			}
+			values["AGENTMESH_RUNNER_GRPC_TARGET"] = "unused:50051"
+			lookups := 0
+			_, e = Build("compatible", func(k string) string {
+				if strings.HasPrefix(k, "AGENTMESH_GRPC") {
+					lookups++
+				}
+				return values[k]
+			})
+			if e == nil || lookups != 0 {
+				t.Fatal("invalid declaration reached remote TLS/dial", raw, e)
+			}
+		}
+	}
+}
+
 func TestBuildRejectsInvalidOrDuplicateOrder(t *testing.T) {
 	for _, order := range []string{"mock,ark", "ark,ark", "unknown"} {
 		_, err := Build(order, func(string) string { return "x" })
@@ -42,6 +69,20 @@ func providerNames(providers []provider.Provider) []string {
 		names = append(names, candidate.Name())
 	}
 	return names
+}
+
+func TestVisionAliasesAreExplicitAndBound(t *testing.T) {
+	for _, raw := range []string{`["v"]`, `["unknown"]`, `["v","v"]`, `null`, `{}`, `[]`} {
+		values := map[string]string{"COMPATIBLE_BASE_URL": "https://example.com/v1", "COMPATIBLE_API_KEY": "fixture", "COMPATIBLE_MODELS": `{"v":"vision-model"}`, "COMPATIBLE_VISION_MODELS": raw}
+		ps, e := Build("compatible", func(k string) string { return values[k] })
+		if raw == `["v"]` {
+			if e != nil || !ps[0].(interface{ SupportsImages(string) bool }).SupportsImages("v") {
+				t.Fatal("valid vision alias rejected")
+			}
+		} else if e == nil {
+			t.Fatal("unbound/invalid vision declaration accepted", raw)
+		}
+	}
 }
 
 func TestBuildRejectsMisspelledCompatibleControls(t *testing.T) {

@@ -4,6 +4,7 @@ services:
   gateway:
     environment:
       AGENTMESH_BILLING_CATALOG_FILE: /run/secrets/billing_catalog
+      AGENTMESH_EMBEDDING_BILLING: "${EMBEDDING_CNY_BILLING:-false}"
     secrets: [billing_catalog]
 secrets:
   billing_catalog: {file: ./secrets/billing_catalog}

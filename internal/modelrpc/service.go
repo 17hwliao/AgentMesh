@@ -53,20 +53,18 @@ func (s *Server) Chat(in *Request, stream grpc.ServerStreamingServer[Chunk]) err
 	var request provider.ChatRequest
 	d := json.NewDecoder(bytes.NewReader(in.ChatJson))
 	d.DisallowUnknownFields()
-	if len(in.ChatJson) > 64<<10 || len(in.TenantId) == 0 || len(in.TenantId) > 64 || d.Decode(&request) != nil || d.Decode(&struct{}{}) != io.EOF || len(request.Messages) == 0 || len(request.Messages) > 128 || request.MaxTokens < 1 || request.MaxTokens > 4096 || len(request.Model) > 128 {
+	if len(in.ChatJson) > provider.MaxChatBytes || len(in.TenantId) == 0 || len(in.TenantId) > 64 || d.Decode(&request) != nil || d.Decode(&struct{}{}) != io.EOF || provider.ValidateChat(request) != nil || request.MaxTokens < 1 || request.MaxTokens > 4096 || len(request.Model) > 128 {
 		return status.Error(codes.InvalidArgument, "request_invalid")
 	}
 	if request.Temperature != nil && (math.IsNaN(*request.Temperature) || *request.Temperature < 0 || *request.Temperature > 2) {
 		return status.Error(codes.InvalidArgument, "temperature_invalid")
 	}
-	for _, m := range request.Messages {
-		if m.Role != "system" && m.Role != "user" && m.Role != "assistant" {
-			return status.Error(codes.InvalidArgument, "role_invalid")
-		}
-	}
 	p, ok := s.Providers[in.Provider]
 	if !ok || s.Authorize == nil || !s.Authorize(ctx, in.TenantId, request.Model, in.Provider) {
 		return status.Error(codes.PermissionDenied, "route_not_allowed")
+	}
+	if !provider.Supports(p, request) {
+		return status.Error(codes.InvalidArgument, "unsupported_model_input")
 	}
 	upstream := ""
 	if bound, ok := p.(interface{ BillingModel(string) string }); ok {
@@ -98,6 +96,26 @@ type Adapter struct {
 	ProviderName string
 	Models       map[string]string
 	DefaultModel string
+	VisionModels []string
+	ToolModels   []string
+}
+
+func (a *Adapter) SupportsTools(alias string) bool {
+	for _, m := range a.ToolModels {
+		if m == alias {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) SupportsImages(alias string) bool {
+	for _, m := range a.VisionModels {
+		if m == alias {
+			return true
+		}
+	}
+	return false
 }
 
 func NewAdapter(conn grpc.ClientConnInterface, name string, models map[string]string, defaultModel string) *Adapter {
@@ -132,6 +150,9 @@ func (a *Adapter) Stream(ctx context.Context, r provider.ChatRequest, emit provi
 	tenant, ok := auth.TenantID(ctx)
 	if !ok {
 		return provider.ErrProtocol
+	}
+	if provider.ValidateChat(r) != nil || !provider.Supports(a, r) {
+		return provider.ErrUnsupportedInput
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()

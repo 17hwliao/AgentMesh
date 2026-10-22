@@ -24,6 +24,8 @@ type Config struct {
 	Models                 map[string]string
 	DisableThinking        bool
 	UseMaxCompletionTokens bool
+	VisionModels           []string
+	ToolModels             []string
 }
 
 type Adapter struct {
@@ -35,6 +37,8 @@ type Adapter struct {
 	models                 map[string]string
 	disableThinking        bool
 	useMaxCompletionTokens bool
+	visionModels           map[string]bool
+	toolModels             map[string]bool
 }
 
 func New(config Config, client *http.Client) (*Adapter, error) {
@@ -61,8 +65,25 @@ func New(config Config, client *http.Client) (*Adapter, error) {
 	}
 	copyClient := *client
 	copyClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	return &Adapter{baseURL: baseURL, model: config.Model, apiKey: config.APIKey, client: &copyClient, name: name, models: models, disableThinking: config.DisableThinking, useMaxCompletionTokens: config.UseMaxCompletionTokens}, nil
+	vision := map[string]bool{}
+	for _, alias := range config.VisionModels {
+		if models[alias] == "" || vision[alias] {
+			return nil, provider.ErrProtocol
+		}
+		vision[alias] = true
+	}
+	tools := map[string]bool{}
+	for _, alias := range config.ToolModels {
+		if models[alias] == "" || tools[alias] {
+			return nil, provider.ErrProtocol
+		}
+		tools[alias] = true
+	}
+	return &Adapter{baseURL: baseURL, model: config.Model, apiKey: config.APIKey, client: &copyClient, name: name, models: models, disableThinking: config.DisableThinking, useMaxCompletionTokens: config.UseMaxCompletionTokens, visionModels: vision, toolModels: tools}, nil
 }
+
+func (a *Adapter) SupportsImages(alias string) bool { return a.visionModels[alias] }
+func (a *Adapter) SupportsTools(alias string) bool  { return a.toolModels[alias] }
 
 func (a *Adapter) Name() string { return a.name }
 func (a *Adapter) BillingModel(alias string) string {
@@ -89,6 +110,12 @@ func (a *Adapter) Health(ctx context.Context) error {
 }
 
 func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit provider.Emit) error {
+	if provider.ValidateChat(input) != nil {
+		return provider.ErrProtocol
+	}
+	if !provider.Supports(a, input) {
+		return provider.ErrUnsupportedInput
+	}
 	limit := input.MaxTokens
 	if limit <= 0 {
 		limit = 1024
@@ -114,6 +141,27 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 	if input.Temperature != nil {
 		payload["temperature"] = *input.Temperature
 	}
+	if len(input.Tools) > 0 {
+		payload["tools"] = input.Tools
+	}
+	if len(input.ToolChoice) > 0 {
+		payload["tool_choice"] = input.ToolChoice
+	}
+	if input.ParallelToolCalls != nil {
+		payload["parallel_tool_calls"] = input.ParallelToolCalls
+	}
+	if input.TopP != nil {
+		payload["top_p"] = input.TopP
+	}
+	if len(input.Stop) > 0 {
+		payload["stop"] = input.Stop
+	}
+	if len(input.ResponseFormat) > 0 {
+		payload["response_format"] = input.ResponseFormat
+	}
+	if input.Seed != nil {
+		payload["seed"] = input.Seed
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return provider.ErrProtocol
@@ -137,6 +185,9 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 
 	reader := sse.NewReader(response.Body)
 	usageSeen := false
+	var toolStream provider.ToolStream
+	finishReason := ""
+	finishEmitted := false
 	for {
 		frame, err := reader.Next()
 		if err != nil {
@@ -153,13 +204,21 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 		}
 		payload := strings.TrimSpace(frame.Data)
 		if payload == "[DONE]" {
+			if toolStream.Complete() != nil {
+				return provider.ErrProtocol
+			}
+			if len(toolStream.Calls) > 0 && finishReason != "tool_calls" {
+				return provider.ErrProtocol
+			}
 			return nil
 		}
 		var event struct {
 			Choices []struct {
 				Delta struct {
-					Content string `json:"content"`
+					Content   string                   `json:"content"`
+					ToolCalls []provider.ToolCallDelta `json:"tool_calls"`
 				} `json:"delta"`
+				FinishReason string `json:"finish_reason"`
 			} `json:"choices"`
 			Error json.RawMessage `json:"error"`
 			Usage *struct {
@@ -175,6 +234,30 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			return provider.ErrUpstream
 		}
 		for _, choice := range event.Choices {
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
+			}
+			if len(choice.Delta.ToolCalls) > 0 {
+				if len(input.Tools) == 0 || toolStream.Add(choice.Delta.ToolCalls) != nil {
+					return provider.ErrProtocol
+				}
+				for _, c := range toolStream.Calls {
+					if c.Function.Name != "" {
+						found := false
+						for _, def := range input.Tools {
+							if def.Function.Name == c.Function.Name {
+								found = true
+							}
+						}
+						if !found {
+							return provider.ErrProtocol
+						}
+					}
+				}
+				if err := emit(provider.Chunk{ToolCalls: choice.Delta.ToolCalls}); err != nil {
+					return err
+				}
+			}
 			// Role, finish and reasoning-only events are not answer chunks. In
 			// particular, do not commit an empty response before the first answer.
 			if choice.Delta.Content == "" {
@@ -183,6 +266,15 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			if err := emit(provider.Chunk{Delta: choice.Delta.Content}); err != nil {
 				return err
 			}
+		}
+		if !finishEmitted && finishReason != "" && (len(input.Tools) > 0 || finishReason != "stop") {
+			if finishReason == "tool_calls" && toolStream.Complete() != nil {
+				return provider.ErrProtocol
+			}
+			if err := emit(provider.Chunk{FinishReason: finishReason}); err != nil {
+				return err
+			}
+			finishEmitted = true
 		}
 		if event.Usage != nil {
 			if usageSeen || event.Usage.PromptTokens == nil || event.Usage.CompletionTokens == nil {

@@ -37,6 +37,14 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
     common = ["--domain", "api.example.test", "--ollama-url", "http://ollama:11434"]
     qwen = [*common, "--chat-provider", "qwen", "--qwen-key-file", str(key), "--qwen-base-url", "https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"]
     folder = prepare("qwen", qwen)
+    vision = prepare("qwen-vision",[*qwen,"--qwen-model","qwen3.8-omni-flash","--qwen-vision","--qwen-tools"])
+    vision_config=subprocess.run([*compose,"--project-directory",str(vision),"--env-file",str(vision/".env"),"-f",str(vision/"compose.yml"),"-f",str(vision/"qwen.yml"),"config","--format","json"],capture_output=True,text=True)
+    assert vision_config.returncode==0
+    vision_env=json.loads(vision_config.stdout)["services"]["gateway"]["environment"]
+    assert json.loads(vision_env["COMPATIBLE_VISION_MODELS"])==["domestic-chat"] and vision_env["AGENTMESH_RESERVATION_UNITS"]=="65536"
+    assert json.loads(vision_env["COMPATIBLE_TOOL_MODELS"])==["domestic-chat"]
+    prepare("bad-tool-profile",["--acceptance","--qwen-tools"],success=False)
+    prepare("bad-vision-profile",["--acceptance","--qwen-vision"],success=False)
     assert not (folder / "secrets/ark_key").exists()
     assert (folder / "secrets/compatible_key").read_text().strip() == "fixture-private-key"
     command = [*compose, "--project-directory", str(folder), "--env-file", str(folder / ".env"), "-f", str(folder / "compose.yml"), "-f", str(folder / "qwen.yml")]
@@ -49,6 +57,8 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
     config = configuration()
     services = config["services"]
     gateway = services["gateway"]
+    assert gateway["environment"]["AGENTMESH_EMBEDDING_PROVIDER"]=="ollama"
+    assert gateway["environment"]["AGENTMESH_EMBEDDING_BASE_URL"]=="http://ollama:11434"
     assert gateway["command"][-1] == "compatible"
     aliases = json.loads(gateway["environment"]["COMPATIBLE_MODELS"])
     assert aliases == {"sql-review": "qwen-plus", "domestic-chat": "qwen-plus"}
@@ -83,6 +93,17 @@ with tempfile.TemporaryDirectory(prefix="qwen-config-") as temporary:
     prepare("ark", qwen, success=False)
     assert (legacy / ".env").read_bytes() == original and not (legacy / "secrets/compatible_key").exists()
     prepare("acceptance", ["--acceptance"])
+    cloud=prepare("qwen-cloud-embedding",["--domain","api.example.test","--chat-provider","qwen","--qwen-key-file",str(key),"--qwen-base-url","https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1","--embedding-provider","compatible"])
+    cloud_result=subprocess.run([*compose,"--project-directory",str(cloud),"--env-file",str(cloud/".env"),"-f",str(cloud/"compose.yml"),"-f",str(cloud/"qwen.yml"),"config","--format","json"],capture_output=True,text=True)
+    assert cloud_result.returncode==0,"cloud embedding Compose failed"
+    cloud_config=json.loads(cloud_result.stdout)
+    cloud_env=cloud_config["services"]["gateway"]["environment"]
+    assert cloud_env["AGENTMESH_EMBEDDING_PROVIDER"]=="compatible" and cloud_env["AGENTMESH_EMBEDDING_MODEL"]=="qwen3.7-text-embedding-flash"
+    assert cloud_env["AGENTMESH_EMBEDDING_DIMENSION"]=="512" and cloud_env["AGENTMESH_EMBEDDING_API_KEY_FILE"]=="/run/secrets/compatible_key"
+    assert json.loads(cloud_config["services"]["am-migrate"]["environment"]["AGENTMESH_BOOTSTRAP_MODEL_ROUTES"])["embedding"]==["compatible"]
+    cloud_money=subprocess.run([*compose,"--project-directory",str(cloud),"--env-file",str(cloud/".env"),"-f",str(cloud/"compose.yml"),"-f",str(cloud/"qwen.yml"),"-f",str(cloud/"qwen-billing.yml"),"config","--format","json"],capture_output=True,text=True)
+    assert cloud_money.returncode==0 and json.loads(cloud_money.stdout)["services"]["gateway"]["environment"]["AGENTMESH_EMBEDDING_BILLING"]=="true"
+    prepare("bad-cloud-dimension",["--domain","api.example.test","--chat-provider","qwen","--qwen-key-file",str(key),"--qwen-base-url","https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1","--embedding-provider","compatible","--embedding-dimension","513"],success=False)
     for index, endpoint in enumerate(["http://workspace/compatible-mode/v1", "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1", "https://workspace/compatible-mode/v1?token=invalid", "https://workspace:bad/compatible-mode/v1"]):
         args = qwen.copy()
         args[-1] = endpoint

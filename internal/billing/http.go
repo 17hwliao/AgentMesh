@@ -13,9 +13,24 @@ import (
 	"time"
 )
 
-func (s *Store) VerifyProviders(providers []provider.Provider) error {
+// ModelBinding describes a non-chat endpoint whose upstream binding is
+// validated by its own adapter. It cannot expand the chat router's models.
+type ModelBinding struct{ Provider, Model, UpstreamModel string }
+
+func (s *Store) VerifyProviders(providers []provider.Provider, additional ...ModelBinding) error {
 	for _, p := range s.Catalog.Prices {
 		found := false
+		for _, b := range additional {
+			if b.Provider == p.Provider && b.Model == p.Model {
+				if found || b.UpstreamModel != p.UpstreamModel {
+					return ErrInvalid
+				}
+				found = true
+			}
+		}
+		if found {
+			continue
+		}
 		for _, adapter := range providers {
 			if adapter.Name() != p.Provider {
 				continue

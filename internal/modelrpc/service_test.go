@@ -17,10 +17,17 @@ import (
 
 type fixtureProvider struct{ cancelled chan struct{} }
 
-func (fixtureProvider) Name() string                 { return "compatible" }
-func (fixtureProvider) BillingModel(string) string   { return "qwen-plus" }
-func (fixtureProvider) Health(context.Context) error { return nil }
+func (fixtureProvider) Name() string                    { return "compatible" }
+func (fixtureProvider) SupportsTools(model string) bool { return model == "m" }
+func (fixtureProvider) BillingModel(string) string      { return "qwen-plus" }
+func (fixtureProvider) Health(context.Context) error    { return nil }
 func (p fixtureProvider) Stream(ctx context.Context, r provider.ChatRequest, emit provider.Emit) error {
+	if r.Messages[0].Content == "tools" {
+		if len(r.Tools) != 1 || r.Tools[0].Function.Name != "Read" || string(r.Tools[0].Function.Parameters) != `{"type":"object"}` {
+			return provider.ErrProtocol
+		}
+		return emit(provider.Chunk{ToolCalls: []provider.ToolCallDelta{{Index: 0, ID: "call_rpc", Type: "function", Function: provider.CallFunction{Name: "Read", Arguments: `{"path":"x"}`}}}, FinishReason: "tool_calls", Usage: &provider.Usage{InputTokens: 20, OutputTokens: 5}})
+	}
 	if e := emit(provider.Chunk{Delta: "hello"}); e != nil {
 		return e
 	}
@@ -77,7 +84,20 @@ func TestMTLSModelStreamTenantGateAndCancellation(t *testing.T) {
 	invoke := func(content, model string, ctx context.Context) error {
 		var result error
 		handler := auth.Authenticate(store, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			result = adapter.Stream(r.Context(), provider.ChatRequest{Model: model, MaxTokens: 32, Messages: []provider.Message{{Role: "user", Content: content}}}, func(c provider.Chunk) error { return nil })
+			input := provider.ChatRequest{Model: model, MaxTokens: 32, Messages: []provider.Message{{Role: "user", Content: content}}}
+			if content == "tools" {
+				input.Tools = []provider.ToolDefinition{{Type: "function", Function: provider.ToolFunction{Name: "Read", Parameters: []byte(`{"type":"object"}`)}}}
+			}
+			seenTool := false
+			result = adapter.Stream(r.Context(), input, func(c provider.Chunk) error {
+				if len(c.ToolCalls) > 0 {
+					seenTool = c.ToolCalls[0].Function.Arguments == `{"path":"x"}` && c.FinishReason == "tool_calls"
+				}
+				return nil
+			})
+			if content == "tools" && result == nil && !seenTool {
+				result = provider.ErrProtocol
+			}
 		}))
 		req := httptest.NewRequest("POST", "/", nil).WithContext(ctx)
 		req.Header.Set("Authorization", "Bearer fixture-key-for-model-rpc")
@@ -86,6 +106,10 @@ func TestMTLSModelStreamTenantGateAndCancellation(t *testing.T) {
 	}
 	if e = invoke("hello", "m", context.Background()); e != nil {
 		t.Fatal(e)
+	}
+	adapter.ToolModels = []string{"m"}
+	if e = invoke("tools", "m", context.Background()); e != nil {
+		t.Fatal("mTLS lost tool schema or output", e)
 	}
 	if e = invoke("hello", "other", context.Background()); e == nil {
 		t.Fatal("unauthorized model reached provider")

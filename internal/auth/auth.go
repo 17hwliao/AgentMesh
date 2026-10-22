@@ -48,7 +48,7 @@ func Bootstrap(lookup func(string) string) (*tenant.MemoryStore, error) {
 }
 func Authenticate(store tenant.Store, next http.Handler) http.Handler {
 	// Bound unauthenticated database work before tenant-level admission exists.
-	lookups := make(chan struct{}, 64)
+	lookups := make(chan struct{}, 8)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimSpace(r.Header.Get("Authorization"))
 		parts := strings.Fields(raw)
@@ -67,15 +67,31 @@ func Authenticate(store tenant.Store, next http.Handler) http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "1")
 			w.WriteHeader(http.StatusTooManyRequests)
-			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "auth_busy"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "auth_busy", "message": "auth_busy", "type": "rate_limit_error"}})
 			return
 		}
-		t, ok := func() (tenant.Tenant, bool) {
+		t, ok, err := func() (tenant.Tenant, bool, error) {
 			defer func() { <-lookups }()
 			check, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 			defer cancel()
-			return store.Authenticate(check, key[:8], sha256.Sum256([]byte(key)))
+			if reader, ok := store.(interface {
+				AuthenticateChecked(context.Context, string, [sha256.Size]byte) (tenant.Tenant, bool, error)
+			}); ok {
+				return reader.AuthenticateChecked(check, key[:8], sha256.Sum256([]byte(key)))
+			}
+			value, ok := store.Authenticate(check, key[:8], sha256.Sum256([]byte(key)))
+			if ok {
+				return value, true, nil
+			}
+			return value, ok, check.Err()
 		}()
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "auth_unavailable", "message": "auth_unavailable", "type": "api_error"}})
+			return
+		}
 		if !ok {
 			reject(w)
 			return
@@ -90,7 +106,7 @@ func TenantID(ctx context.Context) (string, bool) {
 func reject(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": CodeFailed}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": CodeFailed, "message": CodeFailed, "type": "authentication_error"}})
 }
 func IsConfigurationError(err error) (string, bool) {
 	var c *ConfigurationError

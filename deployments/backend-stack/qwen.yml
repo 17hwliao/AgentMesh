@@ -4,13 +4,15 @@ x-qwen-env: &qwen-env
   COMPATIBLE_BASE_URL: "${COMPATIBLE_BASE_URL:?configure account Qwen Base URL}"
   COMPATIBLE_API_KEY_FILE: /run/secrets/compatible_key
   COMPATIBLE_MODELS: "${COMPATIBLE_MODELS:?configure Qwen aliases}"
+  COMPATIBLE_VISION_MODELS: "${COMPATIBLE_VISION_MODELS:-}"
+  COMPATIBLE_TOOL_MODELS: "${COMPATIBLE_TOOL_MODELS:-}"
   COMPATIBLE_DISABLE_THINKING: "${COMPATIBLE_DISABLE_THINKING:-true}"
   COMPATIBLE_USE_MAX_COMPLETION_TOKENS: "${COMPATIBLE_USE_MAX_COMPLETION_TOKENS:-false}"
 services:
   am-migrate:
     image: local/agentmesh-backend:qwen
     environment:
-      AGENTMESH_BOOTSTRAP_MODEL_ROUTES: '{"sql-review":["compatible"],"domestic-chat":["compatible"],"embedding":["ollama"]}'
+      AGENTMESH_BOOTSTRAP_MODEL_ROUTES: '{"sql-review":["compatible"],"domestic-chat":["compatible"],"embedding":["${EMBEDDING_PROVIDER:-ollama}"]}'
   ss-migrate:
     image: local/sql-sentinel-backend:qwen
   seed:
@@ -22,6 +24,12 @@ services:
     # apply reset tags inherited through YAML aliases/merge keys.
     environment:
       <<: *qwen-env
+      AGENTMESH_RESERVATION_UNITS: "${QWEN_RESERVATION_UNITS:-4096}"
+      AGENTMESH_EMBEDDING_PROVIDER: "${EMBEDDING_PROVIDER:-ollama}"
+      AGENTMESH_EMBEDDING_BASE_URL: "${EMBEDDING_BASE_URL:-${OLLAMA_BASE_URL}}"
+      AGENTMESH_EMBEDDING_MODEL: "${OLLAMA_EMBEDDING_MODEL}"
+      AGENTMESH_EMBEDDING_DIMENSION: "${RAG_EMBEDDING_DIMENSION}"
+      AGENTMESH_EMBEDDING_API_KEY_FILE: /run/secrets/compatible_key
       ARK_API_KEY_FILE: !reset null
       ARK_BASE_URL: !reset null
       ARK_MODEL: !reset null

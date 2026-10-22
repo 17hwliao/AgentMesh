@@ -3,6 +3,7 @@ package main
 import (
 	"agentmesh/internal/billing"
 	"agentmesh/internal/configenv"
+	"agentmesh/internal/imagestore"
 	"agentmesh/internal/semanticcache"
 	"context"
 	"crypto/sha256"
@@ -152,13 +153,47 @@ func main() {
 	recorder := observability.NewRecorder(observability.DefaultCapacity, nil, nil)
 	chatGate := reservationGate
 	var money *billing.Store
+	embedBilling := os.Getenv("AGENTMESH_EMBEDDING_BILLING")
+	if embedBilling != "" && embedBilling != "false" && embedBilling != "true" {
+		log.Fatal("embedding_billing_configuration_invalid")
+	}
+	if embedBilling == "true" && os.Getenv("AGENTMESH_BILLING_CATALOG") == "" {
+		log.Fatal("embedding_billing_requires_money_catalog")
+	}
 	if catalog := os.Getenv("AGENTMESH_BILLING_CATALOG"); catalog != "" {
 		quota, ok := reservationGate.(*reservation.Runtime)
 		if !ok {
 			log.Fatal("billing_requires_persistent_storage")
 		}
 		money, err = billing.New(ctx, quota.DB, []byte(catalog))
-		if err != nil || money.VerifyProviders(providers) != nil {
+		if err != nil {
+			log.Fatal("billing_catalog_invalid")
+		}
+		var embedBindings []billing.ModelBinding
+		if embedBilling == "true" {
+			embeddingProviders, embedBindings, err = embedding.EnableBilling(embeddingProviders, money)
+			if err != nil {
+				log.Fatal("embedding_billing_configuration_invalid")
+			}
+			for _, b := range embedBindings {
+				price, ok := money.Catalog.Price(b.Provider, b.Model)
+				if !ok || price.OutputNanoPerMillion != 0 || price.InputNanoPerMillion == 0 || price.CachedInputNanoPerMillion != nil {
+					log.Fatal("embedding_billing_price_invalid")
+				}
+				for _, chat := range providers {
+					if chat.Name() == b.Provider {
+						if binding, ok := chat.(interface{ BillingModel(string) string }); ok && binding.BillingModel(b.Model) != "" {
+							log.Fatal("embedding_billing_alias_conflict")
+						}
+					}
+				}
+			}
+			embeddingHandler, err = embedding.NewHandler(store, embeddingProviders)
+			if err != nil {
+				log.Fatal("embedding_handler_configuration_invalid")
+			}
+		}
+		if money.VerifyProviders(providers, embedBindings...) != nil {
 			log.Fatal("billing_catalog_invalid")
 		}
 		if err = money.Provision(ctx, os.Getenv("AGENTMESH_BOOTSTRAP_TENANT_ID")); err != nil {
@@ -185,7 +220,7 @@ func main() {
 	// Embedding trace records share the queryable recorder with chat.
 	server := gateway.NewWithTenantRoutingAndRecorderAndReservations(resolver, recorder, chatGate)
 	server.SetRateGate(rateRuntime.Gate)
-	server.SetAdmissionLimits(128, 32, 2*time.Minute)
+	server.SetAdmissionLimits(64, 8, 2*time.Minute)
 	embeddingHandler.SetResources(reservationGate, recorder)
 	server.SetEmbeddingHandler(embeddingHandler)
 	if os.Getenv("AGENTMESH_SEMANTIC_CACHE") == "true" {
@@ -217,6 +252,31 @@ func main() {
 		return auth.Authenticate(store, next)
 	})
 	root := http.NewServeMux()
+	var images *imagestore.Store
+	if lifecycle, ok := configuredStore.Lifecycle.(*tenant.MySQLLifecycle); ok {
+		images = &imagestore.Store{DB: lifecycle.Database()}
+		server.SetImageResolver(images.Resolve)
+		imageHandler := auth.Authenticate(store, images.Handler())
+		root.Handle("/v1/images", imageHandler)
+		root.Handle("/v1/images/", imageHandler)
+		root.Handle("/v1/account", auth.Authenticate(store, admin.AccountHandler(lifecycle)))
+		go func() {
+			tick := time.NewTicker(time.Hour)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					step, cancel := context.WithTimeout(ctx, 5*time.Second)
+					if images.PurgeExpired(step) != nil {
+						log.Print("image_cleanup_failed")
+					}
+					cancel()
+				}
+			}
+		}()
+	}
 	if money != nil {
 		root.Handle("/v1/billing/", auth.Authenticate(store, money.Handler()))
 		root.Handle("/admin/billing/", money.Admin(os.Getenv("AGENTMESH_ADMIN_TOKEN")))
@@ -243,6 +303,14 @@ func main() {
 			w.WriteHeader(503)
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "billing_unavailable"})
 			return
+		}
+		if images != nil {
+			var count int
+			if images.DB.QueryRowContext(check, "SELECT COUNT(*) FROM private_images WHERE 1=0").Scan(&count) != nil {
+				w.WriteHeader(503)
+				_ = json.NewEncoder(w).Encode(map[string]string{"status": "image_storage_unavailable"})
+				return
+			}
 		}
 		if healthy, ok := store.(interface{ Health(context.Context) error }); ok {
 			if err := healthy.Health(check); err != nil {

@@ -69,7 +69,7 @@ func TestAuthRejectsDisabledKeyAndTenant(t *testing.T) {
 			r.Header.Set("Authorization", "Bearer "+raw)
 			w := httptest.NewRecorder()
 			h.ServeHTTP(w, r)
-			if called || w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":{\"code\":\"auth_failed\"}}\n" {
+			if called || w.Code != http.StatusUnauthorized || w.Body.String() != "{\"error\":{\"code\":\"auth_failed\",\"message\":\"auth_failed\",\"type\":\"authentication_error\"}}\n" {
 				t.Fatalf("called=%t status=%d body=%q", called, w.Code, w.Body.String())
 			}
 		})

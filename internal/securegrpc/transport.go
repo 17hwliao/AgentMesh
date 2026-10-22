@@ -21,7 +21,17 @@ import (
 	"time"
 )
 
-type Config struct{ CA, Cert, Key, ServerName, Token string }
+type Config struct {
+	CA, Cert, Key, ServerName, Token string
+	MaxMessageBytes                  int
+}
+
+func messageLimit(c Config) int {
+	if c.MaxMessageBytes > 128<<10 && c.MaxMessageBytes <= 3<<20 {
+		return c.MaxMessageBytes
+	}
+	return 128 << 10
+}
 
 func TLS(c Config, server bool) (*tls.Config, error) {
 	if c.CA == "" || c.Cert == "" || c.Key == "" || len(c.Token) < 32 || len(c.Token) > 256 || (!server && c.ServerName == "") {
@@ -84,7 +94,7 @@ func Server(c Config) (*grpc.Server, error) {
 		defer span.End()
 		return handler(srv, contextStream{ServerStream: ss, ctx: ctx})
 	}
-	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)), grpc.MaxRecvMsgSize(128<<10), grpc.MaxSendMsgSize(128<<10), grpc.MaxConcurrentStreams(32), grpc.UnaryInterceptor(unary), grpc.StreamInterceptor(stream))
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)), grpc.MaxRecvMsgSize(messageLimit(c)), grpc.MaxSendMsgSize(128<<10), grpc.MaxConcurrentStreams(32), grpc.UnaryInterceptor(unary), grpc.StreamInterceptor(stream))
 	h := health.NewServer()
 	h.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(server, h)
@@ -121,7 +131,7 @@ func Dial(target string, c Config) (*grpc.ClientConn, error) {
 	if e != nil {
 		return nil, e
 	}
-	return grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)), grpc.WithPerRPCCredentials(tokenCredential{c.Token}), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(128<<10), grpc.MaxCallSendMsgSize(128<<10)))
+	return grpc.NewClient(target, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)), grpc.WithPerRPCCredentials(tokenCredential{c.Token}), grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(128<<10), grpc.MaxCallSendMsgSize(messageLimit(c))))
 }
 func Env(lookup func(string) string, prefix string) Config {
 	return Config{CA: lookup(prefix + "_CA"), Cert: lookup(prefix + "_CERT"), Key: lookup(prefix + "_KEY"), ServerName: lookup(prefix + "_SERVER_NAME"), Token: lookup(prefix + "_TOKEN")}

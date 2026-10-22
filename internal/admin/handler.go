@@ -8,7 +8,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
+	"time"
 
 	"agentmesh/internal/tenant"
 )
@@ -55,6 +57,13 @@ func (h *Handler) SetUsageSummary(summary func(context.Context) (any, error)) {
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if h == nil || h.lifecycle == nil || !h.authorized(r) {
 		writeError(w, http.StatusUnauthorized, CodeAuthFailed)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	r = r.WithContext(ctx)
+	if !(r.Method == http.MethodPost && r.URL.Path == "/admin/tenants") && h.manage(w, r) {
 		return
 	}
 	switch {
@@ -133,10 +142,23 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, tenant.ErrTenantExists) && h.provision != nil {
 		// Creation can be retried after identity committed but quota provisioning
 		// failed. The existing identity is never changed by this path.
+		if management, ok := h.lifecycle.(tenant.Management); ok {
+			existing, e := management.Account(r.Context(), request.TenantID)
+			if e != nil {
+				writeLifecycleError(w, e)
+				return
+			}
+			if !existing.Enabled || !reflect.DeepEqual(existing.ModelRoutes, request.ModelRoutes) {
+				writeError(w, 409, CodeTenantExists)
+				return
+			}
+		}
 		if err := h.provision(r.Context(), request.TenantID); err == nil {
 			writeJSON(w, 200, map[string]string{"tenant_id": request.TenantID})
 			return
 		}
+		writeError(w, 503, "quota_provision_failed")
+		return
 	}
 	if err != nil {
 		writeLifecycleError(w, err)

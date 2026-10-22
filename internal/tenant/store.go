@@ -45,11 +45,11 @@ type routeReader interface {
 // ValidDefinition accepts only the static portion of a tenant declaration.
 // Resolver still checks its routes against the process-local Provider selection.
 func ValidDefinition(value Tenant) bool {
-	if !tenantIDPattern.MatchString(value.ID) || len(value.ModelRoutes) == 0 {
+	if !ValidID(value.ID) || len(value.ModelRoutes) == 0 || len(value.ModelRoutes) > 64 {
 		return false
 	}
 	for model, route := range value.ModelRoutes {
-		if strings.TrimSpace(model) == "" || len(route) == 0 {
+		if strings.TrimSpace(model) != model || len(model) == 0 || len(model) > 128 || strings.ContainsAny(model, "/\\\r\n\t") || len(route) == 0 || len(route) > 3 {
 			return false
 		}
 		seen := map[string]bool{}
@@ -62,6 +62,7 @@ func ValidDefinition(value Tenant) bool {
 	}
 	return true
 }
+func ValidID(id string) bool { return tenantIDPattern.MatchString(id) }
 
 // RouteAllowed enforces the same mock/real provider boundary as runtime.Build:
 // mock is exclusive, while real routes are ordered subsets of the configured

@@ -35,13 +35,27 @@ func Build(lookup func(string) string) ([]Provider, error) {
 		}
 		return []Provider{provider}, nil
 	}
-	if selection != "ollama" {
+	if selection != "ollama" && selection != "compatible" {
 		return nil, &ConfigurationError{CodeConfigurationInvalid}
 	}
 	baseURL := lookup("AGENTMESH_EMBEDDING_BASE_URL")
 	model := lookup("AGENTMESH_EMBEDDING_MODEL")
 	if strings.TrimSpace(baseURL) == "" || strings.TrimSpace(model) == "" {
 		return nil, &ConfigurationError{CodeConfigurationMissing}
+	}
+	if selection == "compatible" {
+		if lookup("AGENTMESH_EMBEDDING_API_KEY") == "" {
+			return nil, &ConfigurationError{CodeConfigurationMissing}
+		}
+		dimension, err := strconv.Atoi(lookup("AGENTMESH_EMBEDDING_DIMENSION"))
+		if err != nil {
+			return nil, &ConfigurationError{CodeConfigurationInvalid}
+		}
+		p, err := NewCompatibleProvider(CompatibleConfig{BaseURL: baseURL, Model: model, APIKey: lookup("AGENTMESH_EMBEDDING_API_KEY"), Dimension: dimension})
+		if err != nil {
+			return nil, &ConfigurationError{CodeConfigurationInvalid}
+		}
+		return []Provider{p}, nil
 	}
 	provider, err := NewOllamaProvider(OllamaConfig{BaseURL: baseURL, Model: model})
 	if err != nil {

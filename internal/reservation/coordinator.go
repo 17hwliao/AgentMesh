@@ -120,7 +120,7 @@ func (s *coordinatorSession) BeforeAttempt(ctx context.Context, providerName str
 	if s.completed || providerName == "" || request.Model != s.model {
 		return domainError(CodeStateInvalid)
 	}
-	inputRunes := messageRunes(request.Messages)
+	inputRunes := messageRunes(provider.BudgetMessages(request))
 	if s.estimatedConsumed()+inputRunes >= s.reservation.ReservedUnits {
 		return domainError(quotaExhaustedCode)
 	}
@@ -139,7 +139,7 @@ func (s *coordinatorSession) BeforeEmit(ctx context.Context, providerName string
 	if s.current == nil || s.current.attempt.ProviderName != providerName {
 		return domainError(CodeStateInvalid)
 	}
-	if uint64(utf8.RuneCountInString(chunk.Delta)) > s.reservation.ReservedUnits-minUnits(s.estimatedConsumed(), s.reservation.ReservedUnits) {
+	if uint64(utf8.RuneCountInString(chunk.OutputText())) > s.reservation.ReservedUnits-minUnits(s.estimatedConsumed(), s.reservation.ReservedUnits) {
 		return domainError(quotaExhaustedCode)
 	}
 	if s.current.chunks == 0 || s.coordinator.now().Sub(s.lastFlush) < s.coordinator.config.FlushInterval {
@@ -154,7 +154,7 @@ func (s *coordinatorSession) AfterEmit(ctx context.Context, providerName string,
 	if s.current == nil || s.current.attempt.ProviderName != providerName {
 		return domainError(CodeStateInvalid)
 	}
-	s.current.forwardedRunes += uint64(utf8.RuneCountInString(chunk.Delta))
+	s.current.forwardedRunes += uint64(utf8.RuneCountInString(chunk.OutputText()))
 	s.current.chunks++
 	if chunk.Usage != nil {
 		usage := *chunk.Usage
@@ -268,7 +268,15 @@ func (s *coordinatorSession) estimatedConsumed() uint64 {
 func messageRunes(messages []provider.Message) uint64 {
 	var total uint64
 	for _, message := range messages {
-		total += uint64(utf8.RuneCountInString(message.Content))
+		total += uint64(utf8.RuneCountInString(message.Text()))
+		for _, call := range message.ToolCalls {
+			total += uint64(len(call.ID) + len(call.Function.Name) + len(call.Function.Arguments))
+		}
+		for _, part := range message.Parts {
+			if part.Type == "image_url" {
+				total += provider.ImageInputBound
+			}
+		}
 	}
 	return total
 }

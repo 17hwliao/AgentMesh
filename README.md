@@ -1,6 +1,12 @@
+**2026-10-22 独立控制台**：[前端与共享 Clerk 登录接入](web/README.md)。当前提供本地界面预览、真实 API 适配及受控认证测试；真实 Clerk 邮件/跨控制台登录待配置。
+
 > **2026-10-10 后端版本**：核心能力见 [后端扩展说明](docs/backend-expansion.md)，第三Provider、人民币余额/账单、语义缓存和独立mTLS模型执行器见 [新增运行契约](docs/backend-roadmap.md)。以下阶段记录保留历史口径；真实模型/云/支付尚需环境联调。
 
 # AgentMesh：多租户 LLM 网关与 Agent Runtime
+
+**2026-10-19**：[用户管理和私有图片存储 API](docs/account-images.md)。MySQL 模式补齐用户列表/详情/禁用/路由、Key 元数据与本人身份接口；支持有配额、到期和租户隔离的小图片上传/读取/删除及私有引用识图。
+
+**2026-10-16 接入更新**：[OpenCode / Claude Code 接入与边界](docs/client-integration.md)、[New API 差异与优先级](docs/new-api-gap-analysis.md)。已补齐模型发现、标准 Chat 流式/非流式、工具与 Messages 转换，千问已完成两个实际客户端的 Read 往返；不代表所有客户端功能或公网部署已验收。
 
 联合部署入口：[可导出的 Compose/千问/验收模板](deployments/backend-stack/EXPORT.md)。同级克隆两个仓库后运行 `python scripts/export-backend-stack.py --out ../deploy`，再按手册生成自己的私有配置。
 
@@ -514,3 +520,9 @@ Kafka by default. Override them with
 `AGENTMESH_USAGE_KAFKA_MYSQL_DSN` and `AGENTMESH_USAGE_KAFKA_BROKERS`; it emits
 JSON only after a real outbox publish, Kafka consume, duplicate delivery and
 MySQL projection check succeed.
+
+## 本地工程验收与面试演示
+
+本轮提供真实依赖 CI、完整链路负载/崩溃/双实例验收、OpenAPI 契约和一键本地演示。操作与证据边界见 [工程验收说明](docs/engineering-verification.md)，接口见 [OpenAPI](docs/openapi.json)。联合 Python SDK 位于 AgentMesh 的 `sdks/python`；真实模型与云端 commissioning 按联合运维手册执行。
+
+双控制台上线与回退方案：[WEB-PRODUCTION](deployments/backend-stack/WEB-PRODUCTION.md)。源码和受控验证不等同于真实 Clerk 或云域名已验收。

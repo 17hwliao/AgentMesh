@@ -28,7 +28,7 @@ import (
 const (
 	chatPath         = "/v1/chat/completions"
 	healthPath       = "/healthz"
-	maxRequestBytes  = 64 << 10
+	maxRequestBytes  = provider.MaxChatBytes
 	modelNotAllowed  = "model_not_allowed"
 	quotaExhausted   = "quota_exhausted"
 	rateLimited      = "rate_limited"
@@ -75,6 +75,25 @@ type Server struct {
 	cache          *semanticcache.Cache
 	cacheRoute     func(context.Context, string, string) string
 	cacheHit       func(context.Context, string, string) error
+	resolveImages  func(context.Context, string, []provider.Message) error
+}
+
+func (s *Server) SetImageResolver(resolve func(context.Context, string, []provider.Message) error) {
+	s.resolveImages = resolve
+}
+func (s *Server) imageResolver(r *http.Request) func([]provider.Message) error {
+	if s.resolveImages == nil {
+		return nil
+	}
+	return func(messages []provider.Message) error {
+		id, ok := auth.TenantID(r.Context())
+		if !ok {
+			return provider.ErrProtocol
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		return s.resolveImages(ctx, id, messages)
+	}
 }
 
 func New(streamer router.Streamer) *Server { return NewWithHealth(streamer) }
@@ -126,6 +145,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.HandleFunc("/health/providers", s.handleProviderHealth)
 	mux.HandleFunc(chatPath, s.handleChat)
+	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/v1/models/{model}", s.handleModels)
 	if s.embeddings != nil {
 		mux.Handle("/v1/embeddings", s.embeddings)
 	}
@@ -139,6 +160,9 @@ func (s *Server) AuthenticatedHandler(authenticate func(http.Handler) http.Handl
 	mux.HandleFunc(healthPath, s.handleHealth)
 	mux.Handle("/health/providers", authenticate(http.HandlerFunc(s.handleProviderHealth)))
 	mux.Handle(chatPath, authenticate(s.withConcurrency(s.withRateLimit(http.HandlerFunc(s.handleChat)))))
+	mux.Handle("/v1/models", authenticate(http.HandlerFunc(s.handleModels)))
+	mux.Handle("/v1/models/{model}", authenticate(http.HandlerFunc(s.handleModels)))
+	mux.Handle("/v1/messages", anthropicAuth(authenticate, s.withConcurrency(s.withRateLimit(http.HandlerFunc(s.handleMessages)))))
 	if s.embeddings != nil {
 		mux.Handle("/v1/embeddings", authenticate(s.withConcurrency(s.withRateLimit(s.embeddings))))
 	}
@@ -219,12 +243,11 @@ func (s *Server) handleHealth(w http.ResponseWriter, request *http.Request) {
 }
 
 type chatRequest struct {
-	Model         string             `json:"model"`
-	Messages      []provider.Message `json:"messages"`
-	Stream        bool               `json:"stream"`
-	MaxTokens     int                `json:"max_tokens,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	StreamOptions *struct {
+	provider.ChatRequest
+	Stream              bool `json:"stream"`
+	MaxCompletionTokens *int `json:"max_completion_tokens,omitempty"`
+	N                   int  `json:"n,omitempty"`
+	StreamOptions       *struct {
 		IncludeUsage bool `json:"include_usage"`
 	} `json:"stream_options,omitempty"`
 }
@@ -234,9 +257,13 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed")
 		return
 	}
-	input, err := decodeChatRequest(request)
+	input, err := decodeChatRequest(request, s.imageResolver(request))
 	if err != nil {
 		writeJSONError(w, http.StatusBadRequest, "invalid_chat_request")
+		return
+	}
+	if endpoint, ok := s.embeddings.(interface{ BillableModel(string) bool }); ok && endpoint.BillableModel(input.Model) {
+		writeJSONError(w, http.StatusBadRequest, "embedding_model_not_chat")
 		return
 	}
 
@@ -279,7 +306,21 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	var reservationSession reservation.StreamSession
-	chat := provider.ChatRequest{Model: input.Model, Messages: input.Messages, MaxTokens: input.MaxTokens, Temperature: input.Temperature}
+	chat := input.ChatRequest
+	out := newCompletion(w, input.Model, input.Stream)
+	if input.StreamOptions != nil {
+		out.includeUsage = input.StreamOptions.IncludeUsage
+	}
+	if provider.HasImages(chat.Messages) || provider.HasTools(chat) {
+		capable, ok := streamer.(interface {
+			SupportsInput(provider.ChatRequest) bool
+		})
+		if !ok || !capable.SupportsInput(chat) {
+			completeTrace(session, "unsupported_model_input", false)
+			writeJSONError(w, 400, "unsupported_model_input")
+			return
+		}
+	}
 	var cached *semanticcache.Prepared
 	if s.cache != nil && s.cacheRoute != nil && request.Header.Get("X-AgentMesh-Cache") == "semantic" {
 		step, cancel := context.WithTimeout(request.Context(), 2*time.Second)
@@ -290,10 +331,8 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 			if getErr == nil && hit && (s.cacheHit == nil || s.cacheHit(step, tenantID, input.Model) == nil) {
 				cancel()
 				w.Header().Set("X-AgentMesh-Cache", "hit")
-				w.Header().Set("Content-Type", "text/event-stream")
-				w.Header().Set("Cache-Control", "no-store")
-				_ = writeSSE(w, map[string]any{"choices": []map[string]any{{"delta": map[string]string{"content": text}}}, "usage": provider.Usage{}, "cache": map[string]any{"hit": true, "provider_called": false, "charged_nano": 0}})
-				_ = writeDone(w)
+				_ = out.emit(provider.Chunk{Delta: text, Usage: &provider.Usage{}})
+				_ = out.complete()
 				completeTrace(session, "cache_hit", false)
 				return
 			}
@@ -301,7 +340,7 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 		cancel()
 	}
 	if s.reservations != nil {
-		reservationSession, err = s.reservations.Begin(request.Context(), tenantID, input.Model, input.Messages)
+		reservationSession, err = s.reservations.Begin(request.Context(), tenantID, input.Model, provider.BudgetMessages(chat))
 		if err != nil {
 			if reservation.Code(err) == quotaExhausted || errors.Is(err, billing.ErrInsufficient) {
 				completeTrace(session, quotaExhausted, false)
@@ -313,18 +352,8 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 			return
 		}
 	}
-	started := false
 	if bill, ok := reservationSession.(interface{ BillingID() string }); ok {
 		w.Header().Set("X-AgentMesh-Billing-Request-ID", bill.BillingID())
-	}
-	start := func() {
-		if started {
-			return
-		}
-		started = true
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
 	}
 	var cacheText strings.Builder
 	cacheable := cached != nil
@@ -341,11 +370,7 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 			u := *chunk.Usage
 			finalUsage = &u
 		}
-		start()
-		return writeSSE(w, map[string]any{
-			"choices": []map[string]any{{"delta": map[string]string{"content": chunk.Delta}}},
-			"usage":   chunk.Usage,
-		})
+		return out.emit(chunk)
 	}
 	if reservationSession != nil {
 		hooked, ok := streamer.(router.HookedStreamer)
@@ -362,12 +387,7 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 	if reservationSession != nil {
 		if completeErr := reservationSession.Complete(request.Context(), streamErrorCode(err), errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)); completeErr != nil {
 			completeTrace(session, quotaUnavailable, false)
-			if started {
-				_ = writeSSE(w, map[string]any{"error": map[string]string{"code": quotaUnavailable}})
-				_ = writeDone(w)
-				return
-			}
-			writeJSONError(w, http.StatusServiceUnavailable, quotaUnavailable)
+			out.fail(quotaUnavailable)
 			return
 		}
 	}
@@ -378,24 +398,17 @@ func (s *Server) handleChat(w http.ResponseWriter, request *http.Request) {
 			cancel()
 		}
 		completeTrace(session, "success", false)
-		if !started {
-			start()
+		if out.complete() != nil {
+			out.fail("provider_protocol_error")
 		}
-		_ = writeDone(w)
 		return
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		completeTrace(session, "cancelled", true)
 		return
 	}
-	if started {
-		completeTrace(session, streamErrorCode(err), false)
-		_ = writeSSE(w, map[string]any{"error": map[string]string{"code": streamErrorCode(err)}})
-		_ = writeDone(w)
-		return
-	}
 	completeTrace(session, streamErrorCode(err), false)
-	writeJSONError(w, http.StatusServiceUnavailable, streamErrorCode(err))
+	out.fail(streamErrorCode(err))
 }
 
 func (s *Server) handleTrace(w http.ResponseWriter, request *http.Request) {
@@ -423,7 +436,7 @@ func completeTrace(session *observability.Session, resultCode string, cancelled 
 	}
 }
 
-func decodeChatRequest(request *http.Request) (chatRequest, error) {
+func decodeChatRequest(request *http.Request, resolve ...func([]provider.Message) error) (chatRequest, error) {
 	defer request.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(request.Body, maxRequestBytes+1))
 	if err != nil || len(data) > maxRequestBytes {
@@ -438,8 +451,17 @@ func decodeChatRequest(request *http.Request) (chatRequest, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return chatRequest{}, errors.New("trailing JSON")
 	}
-	if strings.TrimSpace(input.Model) == "" || len(input.Messages) == 0 || !input.Stream {
+	if strings.TrimSpace(input.Model) == "" || len(input.Messages) == 0 {
 		return chatRequest{}, errors.New("missing required chat fields")
+	}
+	if input.MaxCompletionTokens != nil {
+		if input.MaxTokens != 0 && input.MaxTokens != *input.MaxCompletionTokens {
+			return chatRequest{}, errors.New("conflicting token bounds")
+		}
+		input.MaxTokens = *input.MaxCompletionTokens
+	}
+	if input.N != 0 && input.N != 1 {
+		return chatRequest{}, errors.New("only one completion supported")
 	}
 	if input.MaxTokens < 0 || input.MaxTokens > 4096 {
 		return chatRequest{}, errors.New("invalid output limit")
@@ -450,10 +472,13 @@ func decodeChatRequest(request *http.Request) (chatRequest, error) {
 	if input.MaxTokens == 0 {
 		input.MaxTokens = 1024
 	}
-	for _, message := range input.Messages {
-		if strings.TrimSpace(message.Role) == "" {
-			return chatRequest{}, errors.New("message role is required")
+	if len(resolve) > 0 && resolve[0] != nil {
+		if e := resolve[0](input.Messages); e != nil {
+			return chatRequest{}, e
 		}
+	}
+	if provider.ValidateChat(input.ChatRequest) != nil {
+		return chatRequest{}, errors.New("invalid messages")
 	}
 	return input, nil
 }
@@ -471,7 +496,15 @@ func streamErrorCode(err error) string {
 func writeJSONError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code}})
+	kind := "invalid_request_error"
+	if status == 401 {
+		kind = "authentication_error"
+	} else if status == 429 {
+		kind = "rate_limit_error"
+	} else if status >= 500 {
+		kind = "api_error"
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": code, "type": kind}})
 }
 
 func writeSSE(w http.ResponseWriter, payload any) error {

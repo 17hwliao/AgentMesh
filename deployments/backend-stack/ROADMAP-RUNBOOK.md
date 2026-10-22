@@ -95,4 +95,6 @@ ES丢索引：停止API/verifier/worker，重新bootstrap索引/最小权限key�
 
 只能在新隔离目录使用setup.py --acceptance及setup-extensions.py --fixture-pricing，并绑定acceptance.yml / extensions-acceptance.yml，项目名codex-backend-acceptance；端口只回环。基础10组acceptance.py，核心5组acceptance-expanded.py，可选7组acceptance-extensions.py，另有真实Redis/Kafka/MySQL/缓存、fresh reader、backup restore和Kubernetes结构检查。基础测试应切回基础部署模式；金额账本与token-unit额度是两种协议，不能混用预期。任何fixture PASS都不代表真实供应商、支付、云、GitHub或集群已经验收。
 
-Go工具链1.26.9和x/net v0.60.0修复本次扫描可达问题。公网proxy从固定Caddy v2.11.7源码用同一修复工具链重建，不能沿用旧官方镜像中的Go1.26.8二进制。Proxy.Dockerfile和proxybuild/go.mod/go.sum随包固定；scanner检查应用与proxy源码/实际二进制，未进行所有容器OS包的全面CVE审计。镜像tag只用于本地构建，转移上线时另固定发布digest。
+Go工具链1.26.10和x/net v0.60.0修复本次扫描可达问题。公网proxy从固定Caddy v2.11.7源码用同一修复工具链重建，不能沿用旧官方镜像中的Go1.26.8二进制。Proxy.Dockerfile和proxybuild/go.mod/go.sum随包固定；scanner检查应用与proxy源码/实际二进制，未进行所有容器OS包的全面CVE审计。镜像tag只用于本地构建，转移上线时另固定发布digest。
+
+2026-10-22：Go 1.26.10 修复标准库 GO-2026-6809（https://pkg.go.dev/vuln/GO-2026-6809）；两个应用与代理构建工具链同步更新。历史扫描通过不替代新版工件验证。

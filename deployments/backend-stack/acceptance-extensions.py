@@ -5,7 +5,8 @@ from urllib.parse import urlencode
 from pathlib import Path
 import acceptance as a
 ROOT=Path(__file__).resolve().parent
-a.COMPOSE += ["-f","extensions.yml","-f","extensions-acceptance.yml","--profile","extensions"]
+if "extensions.yml" not in a.COMPOSE:
+    a.COMPOSE += ["-f","extensions.yml","-f","extensions-acceptance.yml","--profile","extensions"]
 os.environ["ELASTICSEARCH_IMAGE"]="docker.elastic.co/elasticsearch/elasticsearch:8.19.17@sha256:aa6ee0ea2d708cea22a24ed44a420c5bbde9853d58a872e1e870f2086d04f652"
 RESULTS=[];STATE={};PROJECT="roadmap-"+uuid.uuid4().hex[:12]
 def call(path,data=None,token=None,port=29080,expected=200,headers=None,method=None):

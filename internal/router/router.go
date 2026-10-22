@@ -86,6 +86,17 @@ func (r Router) Stream(ctx context.Context, request provider.ChatRequest, emit p
 	return r.StreamWithAttemptHook(ctx, request, emit, nil)
 }
 
+// Capability filtering precedes attempt hooks, so unsupported image routes
+// neither issue paid calls nor create an uncertain started billing attempt.
+func (r Router) SupportsInput(request provider.ChatRequest) bool {
+	for _, p := range r.providers {
+		if provider.Supports(p, request) {
+			return true
+		}
+	}
+	return false
+}
+
 func (r Router) StreamWithAttemptHook(ctx context.Context, request provider.ChatRequest, emit provider.Emit, hook AttemptHook) error {
 	if len(r.providers) == 0 {
 		return ErrNoProvider
@@ -94,6 +105,9 @@ func (r Router) StreamWithAttemptHook(ctx context.Context, request provider.Chat
 	for _, candidate := range r.providers {
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if !provider.Supports(candidate, request) {
+			continue
 		}
 		if hook != nil {
 			if err := hook.BeforeAttempt(ctx, candidate.Name(), request); err != nil {

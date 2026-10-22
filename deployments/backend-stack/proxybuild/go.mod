@@ -1,6 +1,6 @@
 module backend-release-proxy
 
-go 1.26.9
+go 1.26.10
 
 require github.com/caddyserver/caddy/v2 v2.11.7
 

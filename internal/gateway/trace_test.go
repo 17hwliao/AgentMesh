@@ -59,7 +59,7 @@ func TestTraceQueryIsTenantScopedAndSafe(t *testing.T) {
 			request.Header.Set("Authorization", "Bearer "+test.key)
 			recorder := httptest.NewRecorder()
 			handler.ServeHTTP(recorder, request)
-			if recorder.Code != http.StatusNotFound || recorder.Body.String() != "{\"error\":{\"code\":\"trace_not_found\"}}\n" || mock.Calls() != callsBeforeQuery {
+			if recorder.Code != http.StatusNotFound || recorder.Body.String() != "{\"error\":{\"code\":\"trace_not_found\",\"message\":\"trace_not_found\",\"type\":\"invalid_request_error\"}}\n" || mock.Calls() != callsBeforeQuery {
 				t.Fatalf("status=%d body=%q calls=%d", recorder.Code, recorder.Body.String(), mock.Calls())
 			}
 		})
@@ -77,7 +77,7 @@ func TestTraceQueryRejectsPendingAndUnauthenticated(t *testing.T) {
 	} {
 		response := httptest.NewRecorder()
 		handler.ServeHTTP(response, request)
-		if response.Code != http.StatusUnauthorized || response.Body.String() != "{\"error\":{\"code\":\"auth_failed\"}}\n" || mock.Calls() != 0 {
+		if response.Code != http.StatusUnauthorized || response.Body.String() != "{\"error\":{\"code\":\"auth_failed\",\"message\":\"auth_failed\",\"type\":\"authentication_error\"}}\n" || mock.Calls() != 0 {
 			t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), mock.Calls())
 		}
 	}
@@ -86,7 +86,7 @@ func TestTraceQueryRejectsPendingAndUnauthenticated(t *testing.T) {
 	request.Header.Set("Authorization", "Bearer "+raw)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":{\"code\":\"trace_not_found\"}}\n" || mock.Calls() != 0 {
+	if response.Code != http.StatusNotFound || response.Body.String() != "{\"error\":{\"code\":\"trace_not_found\",\"message\":\"trace_not_found\",\"type\":\"invalid_request_error\"}}\n" || mock.Calls() != 0 {
 		t.Fatalf("status=%d body=%q calls=%d", response.Code, response.Body.String(), mock.Calls())
 	}
 }

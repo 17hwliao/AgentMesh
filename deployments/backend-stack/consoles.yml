@@ -1,0 +1,32 @@
+# Optional overlay. Two independent frontends; one shared Clerk identity instance.
+# Keep ./console-private out of Git. Each service sees only its own directory.
+x-console: &console
+  restart: unless-stopped
+  init: true
+  read_only: true
+  tmpfs: ["/tmp:rw,noexec,nosuid,size=16m"]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  pids_limit: 64
+  mem_limit: 256m
+  networks: [private, egress]
+  environment:
+    CONSOLE_CONFIG_FILE: /run/console-private/config.json
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+services:
+  mesh-console:
+    <<: *console
+    build: {context: ../AgentMesh/web}
+    volumes: ["./console-private/mesh:/run/console-private:ro"]
+  sentinel-console:
+    <<: *console
+    build: {context: ../sql-sentinel/web}
+    volumes: ["./console-private/sentinel:/run/console-private:ro"]
+  proxy:
+    image: local/backend-proxy:web
+    environment:
+      MESH_CONSOLE_DOMAIN: "${MESH_CONSOLE_DOMAIN:?configure MESH_CONSOLE_DOMAIN}"
+      SENTINEL_CONSOLE_DOMAIN: "${SENTINEL_CONSOLE_DOMAIN:?configure SENTINEL_CONSOLE_DOMAIN}"
+    volumes: ["./Caddyfile.consoles:/etc/caddy/Caddyfile:ro"]

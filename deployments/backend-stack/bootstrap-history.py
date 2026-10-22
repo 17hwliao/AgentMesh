@@ -4,10 +4,13 @@ Use after starting ES, before starting API/verifier. Local endpoint can be an
 SSH tunnel; CA and DNS identity are verified. No root key is mounted in apps.
 """
 import argparse,base64,json,os,ssl,urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 root=Path(__file__).resolve().parent
 p=argparse.ArgumentParser();p.add_argument("--url",default="https://localhost:9200");a=p.parse_args()
-if a.url not in {"https://localhost:9200","https://localhost:29200"}:p.error("use a verified local SSH tunnel")
+endpoint=urlsplit(a.url)
+if endpoint.scheme!="https" or endpoint.hostname!="localhost" or not endpoint.port or endpoint.username or endpoint.password or endpoint.path not in {"","/"} or endpoint.query or endpoint.fragment:
+    p.error("use an explicitly selected verified localhost HTTPS tunnel")
 tls=ssl.create_default_context(cafile=str(root/"secrets/grpc_ca"))
 password=(root/"secrets/es_password").read_text().strip()
 auth="Basic "+base64.b64encode(("elastic:"+password).encode()).decode()

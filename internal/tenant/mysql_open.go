@@ -1,6 +1,7 @@
 package tenant
 
 import (
+	"agentmesh/internal/dbpool"
 	"database/sql"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -13,5 +14,6 @@ func OpenMySQLStore(dsn string) (*MySQLStore, *sql.DB, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	dbpool.Configure(db)
 	return NewMySQLStore(stdReadDatabase{db: db}), db, nil
 }

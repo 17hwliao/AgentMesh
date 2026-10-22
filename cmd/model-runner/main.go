@@ -3,6 +3,7 @@ package main
 import (
 	"agentmesh/internal/configenv"
 	"agentmesh/internal/modelrpc"
+	"agentmesh/internal/provider"
 	"agentmesh/internal/runtime"
 	"agentmesh/internal/securegrpc"
 	"agentmesh/internal/telemetry"
@@ -54,7 +55,9 @@ func main() {
 	if e != nil {
 		log.Fatal("identity_unavailable")
 	}
-	server, e := securegrpc.Server(securegrpc.Env(os.Getenv, "AGENTMESH_GRPC"))
+	grpcCfg := securegrpc.Env(os.Getenv, "AGENTMESH_GRPC")
+	grpcCfg.MaxMessageBytes = provider.MaxChatBytes + (64 << 10)
+	server, e := securegrpc.Server(grpcCfg)
 	if e != nil {
 		log.Fatal("grpc_configuration_invalid")
 	}

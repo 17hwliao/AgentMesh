@@ -1,0 +1,12 @@
+{
+  "origin": "http://127.0.0.1:4180",
+  "peer_url": "http://127.0.0.1:4181",
+  "public_api_url": "",
+  "clerk_publishable_key": "",
+  "clerk_issuer": "",
+  "clerk_secret_file": "/run/console-private/clerk_secret",
+  "members_file": "/run/console-private/members.json",
+  "backend_url": "http://gateway:18080",
+  "backend_admin_file": "/run/console-private/admin_token",
+  "production": false
+}

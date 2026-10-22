@@ -71,14 +71,17 @@ type keyGenerator func() (string, string, error)
 // MySQLLifecycle owns only local administration writes. It never returns a
 // digest and never stores the one-time raw Key after its CreateAPIKey call.
 type MySQLLifecycle struct {
-	db       lifecycleDatabase
-	now      func() time.Time
-	newKey   keyGenerator
-	maxTries int
+	db           lifecycleDatabase
+	managementDB *sql.DB
+	now          func() time.Time
+	newKey       keyGenerator
+	maxTries     int
 }
 
 func NewMySQLLifecycle(db *sql.DB) *MySQLLifecycle {
-	return newMySQLLifecycle(stdLifecycleDatabase{db: db}, time.Now, randomAPIKey)
+	r := newMySQLLifecycle(stdLifecycleDatabase{db: db}, time.Now, randomAPIKey)
+	r.managementDB = db
+	return r
 }
 func newMySQLLifecycle(db lifecycleDatabase, now func() time.Time, newKey keyGenerator) *MySQLLifecycle {
 	if now == nil {
@@ -126,7 +129,7 @@ func (r *MySQLLifecycle) CreateAPIKey(ctx context.Context, tenantID string) (API
 	}
 	defer tx.Rollback()
 	var enabled bool
-	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM tenants WHERE tenant_id = ? LIMIT 1`, tenantID).Scan(&enabled); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT enabled FROM tenants WHERE tenant_id = ? LIMIT 1 FOR UPDATE`, tenantID).Scan(&enabled); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return APIKey{}, "", ErrTenantNotFound
 		}

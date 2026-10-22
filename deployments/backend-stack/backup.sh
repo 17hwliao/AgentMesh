@@ -8,15 +8,22 @@ project=${COMPOSE_PROJECT_NAME:-internship-backend}
 destination=${1:-backups/$(date -u +%Y%m%dT%H%M%SZ)}
 mkdir -p "$destination"
 compose() {
-  if [ "${BACKUP_EXTENSIONS:-false}" = true ]; then
+  if [ -n "${COMPOSE_FILE:-}" ]; then
+    docker compose -p "$project" "$@"
+  elif [ "${BACKUP_EXTENSIONS:-false}" = true ]; then
     docker compose -p "$project" -f compose.yml -f extensions.yml --profile extensions "$@"
   else docker compose -p "$project" -f compose.yml "$@"; fi
 }
-actors='gateway usage-relay usage-worker sentinel-api sentinel-relay sentinel-worker'
-if [ "${BACKUP_EXTENSIONS:-false}" = true ]; then actors="$actors model-runner verifier"; fi
-resume() { compose start $actors >/dev/null; }
-compose stop $actors
+# Only restore services that were running before the backup. In particular a
+# disabled worker must not become active as an accidental backup side effect.
+running=$(compose ps --status running --services)
+actors=''
+for service in $running; do
+  case "$service" in gateway|usage-relay|usage-worker|sentinel-api|sentinel-relay|sentinel-worker|model-runner|verifier) actors="$actors $service";; esac
+done
+resume() { if [ -n "$actors" ]; then compose start $actors >/dev/null; fi; }
 trap resume EXIT
+if [ -n "$actors" ]; then compose stop $actors; fi
 for pair in 'control agentmesh' 'control sentinel_control' 'baseline sentinel' 'candidate sentinel'; do
   set -- $pair
   service=$1

@@ -1,5 +1,9 @@
 # AgentMesh 文档导航
 
+2026-10-19：[用户管理与私有图片 API](account-images.md)，包含迁移、存储配额、鉴权和读取边界。
+
+2026-10-16：[OpenCode / Claude Code 接入](client-integration.md)、[New API 差异与优先级](new-api-gap-analysis.md)。模型发现、标准 Chat/工具、Messages 转换与两个实际 CLI 的千问 Read 往返已实现。[上下文与图片说明](gateway-protocol-design.md)保留设计背景。后端/计费另见 [扩展契约](backend-roadmap.md)；下方切片验证记录保留历史范围。
+
 本目录是现有资料的索引：不移动、不删除、不覆盖 README、规格、决策或私有阶段记录。运行时行为以代码和 015 HTTP 契约为准；路线图只说明计划和边界。
 
 ## 推荐阅读路径
