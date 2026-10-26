@@ -1,0 +1,656 @@
+# Original README archive
+
+Preserved from the README before the English homepage update on October 26, 2026.
+This archive retains the original Chinese material, commands, historical checkpoints, and evidence limits.
+For the current English overview, return to the [project README](../../README.md).
+
+---
+
+<p align="center">
+  <img src="../../docs/assets/readme-mark.svg" width="88" height="88" alt="AgentMesh" />
+</p>
+
+<h1 align="center">AgentMesh</h1>
+
+<p align="center"><strong>统一模型入口，让每次调用有路由、有预算、可追踪。</strong></p>
+
+<p align="center">多租户 LLM 网关与 Agent Runtime · Go / MySQL / Redis / Kafka</p>
+
+<p align="center">
+  <a href="#能力概览">能力概览</a> &nbsp;·&nbsp;
+  <a href="#快速体验">快速体验</a> &nbsp;·&nbsp;
+  <a href="#部署与接入">部署与接入</a> &nbsp;·&nbsp;
+  <a href="#文档地图">文档地图</a>
+</p>
+
+---
+
+AgentMesh 为多个 AI 应用提供统一的模型服务，集中处理 Provider 接入、流式传输、租户身份、预算与调用观测。SQL Sentinel 和文档摘要 CLI 通过公开 HTTP 契约使用它；业务应用可以沿用自己的工作流。
+
+| 接入 | 控制 | 追踪 |
+| :--- | :--- | :--- |
+| Ark、Ollama、OpenAI 兼容 Provider；模型目录与客户端协议适配。 | 租户与 Key、模型路由、限流、预算预留及可选人民币钱包。 | 请求 Trace、用量投影、账单关联、Prometheus 与 OpenTelemetry。 |
+
+## 能力概览
+
+| 能力 | 当前实现与阅读入口 |
+| :--- | :--- |
+| **模型与客户端** | 流式/非流式 Chat、工具与 Messages 转换；[OpenCode / Claude Code 接入](../../docs/client-integration.md)。 |
+| **租户与身份** | MySQL 租户、Key 生命周期、模型授权；[用户管理与私有图片 API](../../docs/account-images.md)。 |
+| **预算与恢复** | Redis 预留、MySQL 持久账本、取消结算、离线钱包恢复；[后端基线契约](../../docs/backend-release.md)。 |
+| **金额账单** | 可选人民币钱包、版本化价格、实际 usage 结算与待对账状态；[计费运行契约](../../docs/backend-roadmap.md#余额与账单)。 |
+| **上下文与缓存** | 受限多轮文本/图片、embeddings、显式启用的语义缓存；[协议与上下文](../../docs/gateway-protocol-design.md)。 |
+| **独立执行器** | 模型凭据保留在 runner，通过 mTLS 调用；[执行器与缓存说明](../../docs/backend-roadmap.md)。 |
+| **独立控制台** | 模型目录、聊天、Key 与账单界面；[前端与共享 Clerk 接入](../../web/README.md)。 |
+
+能力存在于源码中，不等于所有目标环境都已验收。已有千问客户端 Read 往返记录；真实云部署、支付与完整客户端兼容性仍以对应契约和目标环境验证为准。控制台真实 Clerk 邮件与跨控制台会话尚待配置。
+
+## 请求如何经过 AgentMesh
+
+```mermaid
+flowchart LR
+    C["CLI / 应用 / 控制台"] --> G["认证 · 模型授权 · 限流"]
+    G --> B["预算 / 可选金额预留"]
+    B --> R["路由与 Provider / mTLS Runner"]
+    R --> P["Ark / Ollama / 兼容平台"]
+    P --> S["响应转发与取消传播"]
+    S --> L["结算 · 用量账本 · Trace"]
+```
+
+首个数据块之前允许 fallback；流开始后失败不会切换模型。预算单位与人民币钱包分别管理；无法确认用量的金额调用保留 hold，进入待对账状态。具体边界见[运行契约](../../docs/backend-roadmap.md)。
+
+## 快速体验
+
+### 本机 mock 演示
+
+需要与 [`go.mod`](../../go.mod) 一致的 Go 工具链，以及 Windows PowerShell。从仓库根目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-stage-1.ps1
+```
+
+脚本临时创建 Key，在 `127.0.0.1:18082` 启动 mock 网关，运行摘要与 SQL CLI、查询 Trace，并检查取消传播；完成后清理临时进程与日志。它不调用真实模型，也不启动 Docker、MySQL 或 Redis。请先确保端口空闲。
+
+### 查看控制台
+
+需要 Node.js ≥ 22.12：
+
+```sh
+cd web
+npm ci
+npm run build
+npm start
+```
+
+打开 `http://127.0.0.1:4180/?preview=1` 查看标明样例数据的界面。业务操作需要服务端身份与后端配置；完整说明见 [web/README.md](../../web/README.md)。
+
+## 部署与接入
+
+AgentMesh 与 [SQL Sentinel](https://github.com/17hwliao/sql-sentinel) 共享可导出的部署模板，源码与生成的私有配置分开保存：
+
+```sh
+git clone https://github.com/17hwliao/AgentMesh.git
+git clone https://github.com/17hwliao/sql-sentinel.git
+cd AgentMesh
+python scripts/export-backend-stack.py --out ../deploy
+```
+
+生成 `AgentMesh/`、`sql-sentinel/`、`deploy/` 同级目录后，按[导出说明](../../deployments/backend-stack/EXPORT.md)准备私有配置，再阅读[千问接入](../../deployments/backend-stack/QWEN-RUNBOOK.md)与[上线运维手册](../../deployments/backend-stack/ROADMAP-RUNBOOK.md)。导出不启动服务，也不覆盖已有部署目录。
+
+单机 Compose 是当前默认部署形态。公开 metrics/admin、钱包恢复、价格续期与证书轮换都应按手册配置；模板不代表真实供应商或云端已经验收。
+
+## 文档地图
+
+| 你想了解 | 从这里开始 |
+| :--- | :--- |
+| 当前运行行为 | [后端基线](../../docs/backend-release.md) → [核心扩展](../../docs/backend-expansion.md) → [后续运行契约](../../docs/backend-roadmap.md) |
+| 接入编程客户端 | [客户端接入与边界](../../docs/client-integration.md) · [New API 差异](../../docs/new-api-gap-analysis.md) |
+| 用户、Key 与图片 | [账号与私有图片](../../docs/account-images.md) · [独立控制台](../../web/README.md) |
+| 部署与恢复 | [模板导出](../../deployments/backend-stack/EXPORT.md) · [部署手册](../../deployments/backend-stack/README.md) |
+| 工程验证与观测 | [工程验收说明](../../docs/engineering-verification.md) · [OpenAPI](../../docs/openapi.json) · [本地改进契约](../../docs/local-improvements.md) |
+| 设计取舍与阶段依据 | [完整文档导航](../../docs/README.md) · [公开决策](../../decisions/) · [原始规格](../../specs/) |
+
+## 开发检查
+
+```sh
+go test ./...
+go vet ./...
+```
+
+真实依赖、并发与部署检查的条件见[工程验收说明](../../docs/engineering-verification.md)。本机 mock 的吞吐和 fixture 结果只适用于对应实验范围。
+
+## 设计与阶段记录
+
+以下保留原 README 的设计、命令、历史实验及限制，便于追溯。早期切片中的“当前”“尚未实现”属于当时检查点；今天的行为请以上方运行契约为准。规划条目不自动成为已实现能力。
+
+<details>
+<summary><strong>展开原始设计、阶段 001–018 与实验记录</strong></summary>
+
+**2026-10-22 独立控制台**：[前端与共享 Clerk 登录接入](../../web/README.md)。当前提供本地界面预览、真实 API 适配及受控认证测试；真实 Clerk 邮件/跨控制台登录待配置。
+
+> **2026-10-10 后端版本**：核心能力见 [后端扩展说明](../../docs/backend-expansion.md)，第三Provider、人民币余额/账单、语义缓存和独立mTLS模型执行器见 [新增运行契约](../../docs/backend-roadmap.md)。以下阶段记录保留历史口径；真实模型/云/支付尚需环境联调。
+
+**2026-10-19**：[用户管理和私有图片存储 API](../../docs/account-images.md)。MySQL 模式补齐用户列表/详情/禁用/路由、Key 元数据与本人身份接口；支持有配额、到期和租户隔离的小图片上传/读取/删除及私有引用识图。
+
+**2026-10-16 接入更新**：[OpenCode / Claude Code 接入与边界](../../docs/client-integration.md)、[New API 差异与优先级](../../docs/new-api-gap-analysis.md)。已补齐模型发现、标准 Chat 流式/非流式、工具与 Messages 转换，千问已完成两个实际客户端的 Read 往返；不代表所有客户端功能或公网部署已验收。
+
+联合部署入口：[可导出的 Compose/千问/验收模板](../../deployments/backend-stack/EXPORT.md)。同级克隆两个仓库后运行 `python scripts/export-backend-stack.py --out ../deploy`，再按手册生成自己的私有配置。
+
+> **2026-10-11 本地改进**：共用 SSE、Provider 配置校验、余额状态验证与流式资源基线见 [本地改进契约](../../docs/local-improvements.md)。本轮源码更新不替换既有发布包。
+
+> **2026-10 后端发布状态**：当前实现包含 MySQL 租户与密钥、Redis 限流和预留配额、持久充值记录、取消结算/恢复、Kafka 用量投影、Ark/Ollama 流式聊天及受预算保护的 embeddings。入口为 `cmd/api`，生产镜像还包含迁移、用量 relay/worker、离线钱包恢复命令。见 [当前后端契约](../../docs/backend-release.md)。下文编号切片是历史开发记录，不能作为当前能力清单；真实云域名和模型验收需执行联合发布包的 `deploy/commission.py`。
+
+> 文档导航：[docs/README.md](../../docs/README.md)。该导航保留并分类现有规格、决策与本机证据，不替代原始文档。
+
+## 1. 项目目标
+
+AgentMesh 是面向多个 AI 应用的 Go 模型运行时。它统一处理模型 Provider 接入、流式转发、租户鉴权、Token 配额、限流和调用观测，让业务 Agent 专注于自身逻辑。
+
+首版接入两个独立客户端：
+
+1. SQL Sentinel；
+2. 一个极简文档摘要 CLI。
+
+这证明它是可复用平台，而不是 SQL Sentinel 的内部工具。
+
+## 1.1 当前可运行切片（001）
+
+当前仓库已提供一个**仅本机、仅 mock** 的最小 SSE 网关，以及两个通过 HTTP 使用它的 CLI。它用于验证
+Provider 路由、首块前 fallback、SSE 转发和取消传播；不表示 Ark/豆包、Ollama、API Key、Redis、MySQL、
+配额或账单已接入。
+
+在第一个终端启动（只接受 `127.0.0.1:PORT`，拒绝局域网和通配监听）：
+
+```powershell
+go run ./cmd/api --addr 127.0.0.1:18080
+```
+
+在另一个终端分别运行两个客户端：
+
+```powershell
+go run ./cmd/summary-cli --text 'AgentMesh streams local mock output.'
+go run ./cmd/sql-diagnose-cli --sql 'SELECT id FROM users WHERE status = ''active'''
+```
+
+两条命令都会得到 `mock response`。默认 primary mock 在首个 SSE 数据块前失败，Router 因而使用 fallback mock；
+若已经转发任一数据块，后续失败只产生 `stream_interrupted`，绝不切换模型。SQL CLI 只把 SQL 当作提示文本，
+不会执行 SQL。没有密钥、真实模型调用或 Docker 操作。
+
+## 1.2 真实 Provider Adapter（002）
+
+Ark 与 Ollama Adapter 已具备离线 fixture 测试，但默认仍为 `--providers mock`。只有操作者显式选择
+`--providers ark,ollama` 时，服务才读取以下进程环境变量：`ARK_BASE_URL`、`ARK_MODEL`、`ARK_API_KEY`、
+`OLLAMA_BASE_URL`、`OLLAMA_MODEL`。不要把这些值写入 flags、配置文件、日志、终端录制或 Git。
+
+```powershell
+go run ./cmd/api --providers ark,ollama
+```
+
+任一必填值缺失或格式无效时，服务在创建 HTTP client 前以 `provider_configuration_missing` 或
+`provider_configuration_invalid` 退出，且不会尝试 Provider 网络连接。`GET /health/providers` 只返回当前
+Provider 的名称和布尔健康状态；它不返回 endpoint、模型或密钥，且 health 成功不等于一次 chat 流成功。
+
+本仓库在 2026-08-28 的受控 T003 运行中，五个必需环境变量均不存在；上述命令实际返回
+`provider_configuration_missing`、exit 1，Provider 尝试数为 0。真实调用即使成功也只证明本次 Adapter
+可连接，不表示已实现租户鉴权、配额、账单或精确 Token 计费。
+
+## 1.3 本机 API Key 与租户路由（003）
+
+003 只实现离线、本进程内存 seed：启动时从 `AGENTMESH_BOOTSTRAP_API_KEY` 派生 API Key 的 prefix 与
+SHA-256 hash，内存记录绝不保存原始 key。还必须提供 `AGENTMESH_BOOTSTRAP_TENANT_ID` 和严格 JSON 的
+`AGENTMESH_BOOTSTRAP_MODEL_ROUTES`（模型到 `mock` 的顺序声明）。原始值只能由当前 shell 的安全方式临时
+生成；不得写入 flags、文件、日志、终端录制或 Git。两个 CLI 只从 `AGENTMESH_API_KEY` 读取同一原始值，并发送
+`Authorization: Bearer`，不提供 key flag。
+
+`POST /v1/chat/completions` 和 `GET /health/providers` 现在都需要认证；缺失、畸形、未知或禁用 key 统一返回
+401 `auth_failed`，且不会读取 chat body 或调用 Provider。认证后才解码 chat 请求：tenant 未允许该 model 返回
+403 `model_not_allowed`，仍为 0 Provider attempt。`GET /health/providers` 只显示当前 tenant 至少一个模型允许的
+Provider 名称及健康状态；`GET /healthz` 仍是唯一公开端点。
+
+tenant route 只是逻辑名称声明，实际 Adapter 始终由 002 的 `runtime.Build` 创建。启动前会拒绝 mock 与真实
+Provider 混排、乱序或越出全局 Provider 集合的 tenant route。默认 `QuotaGate` 仍为 allow-only 开发切片；006 的
+持久 Reservation 只有显式设置 `AGENTMESH_QUOTA_MODE=reservation` 后才启用。
+
+2026-08-28 的 T003 受控本机运行使用一次性的随机 key（未落盘），以 `mock-model → mock` 启动
+`127.0.0.1` 网关：两个 CLI 均实际输出 `mock response`；无 Bearer 请求返回 401 `auth_failed`；有效 key 请求
+未授权 model 返回 403 `model_not_allowed`。注入式 QuotaGate 测试证明 429 `quota_exhausted` 路径为 0 Provider
+attempt，但默认进程不会声称配额已启用。该运行未使用真实 Provider 或 Docker。
+
+## 1.4 安全 Trace 与内存 Usage Record（004）
+
+每个通过认证、且能进入 tenant/model 路由的 chat 请求都会由服务端生成不可预测的 trace ID，并在响应开始 SSE
+前通过 `X-AgentMesh-Trace-ID` 返回。随后可使用同一个 API Key 查询：
+
+```text
+GET /v1/observability/traces/{trace_id}
+Authorization: Bearer <当前进程的临时 key>
+```
+
+查询只返回当前 tenant 的安全摘要：model、Provider attempt 名称/结果、首块与总耗时、稳定结果码、取消状态和
+Provider 明示的 usage。它绝不返回 tenant ID、prompt、messages、SSE delta、raw key/prefix/hash、endpoint 或
+Provider 原始错误；usage 没有被 Provider 明示时固定为 `usage_observed=false`，不伪造 Token 估算。跨 tenant、
+未知和未完成 trace 都统一为 404 `trace_not_found`，不暴露记录是否存在，也不触发 Provider。
+
+Recorder 是固定容量、进程内的诊断环：只淘汰最早完成记录，重启即丢失；若容量里全是 pending，业务流仍继续，
+但该请求的 trace 可能不可查询。它不是审计、账单、持久化 `usage_records` 表或后续 Reservation attempt 凭据，
+未接 OTel、Prometheus、MySQL、Redis 或 Eino Callback。
+
+在 Windows 本机可运行已验证的 stage-1 演示：
+
+```powershell
+make demo-stage-1
+```
+
+该 target 临时生成随机 key、仅启动 `127.0.0.1` mock 网关，分别运行两个 CLI，查询一条 trace，并执行取消传播测试；
+默认 mock primary 在首块前失败、fallback 输出 `mock response`。脚本会结束进程并清理临时日志，不写入 key；不启动
+Docker 或真实 Provider。公开决策记录见 `decisions/`，私有简历/面试资料不进入 Git。
+
+## 1.5 Reservation 状态机预验证（005）
+
+005 只验证未来配额链路的领域状态，尚未接入 Gateway 或任何真实余额：内存 Reservation 从 `creating` 进入
+`reserved`，随后在没有 started attempt 时可以 `cancelled`；一旦先记录了 started attempt，首块前失败、流中断、
+Context 取消或未知上游结果都只能 `settled`。`reserved` 在这里仅表示状态机通过，**不表示** Redis 已预扣、MySQL
+已持久化或 tenant 余额已冻结。
+
+每个变更携带 `reservation_id`、`expected_version` 和 operation。相同的成功操作重放返回第一次结果；同版本不同
+操作或版本冲突会被拒绝，拒绝本身不会进入幂等 journal。`expired_pending` 是 future reconciler 的非终态，普通
+Cancel 无法直接裁决它。内存 Repository 只用于离线语义和 race 测试：重启丢失、没有跨进程锁、没有迁移、没有
+Redis Lua/MySQL/SQLite、reconciler、usage_outbox、对账或 `demo-stage-4`，因此不能作为“不透支”或生产一致性的证据。
+
+2026-08-29 的受控测试实际通过：attempt 前取消与同操作重放、attempt 后 `reservation_must_settle`、版本/tenant
+冲突、`expired_pending` 禁止普通取消，以及 32 个并发相同 `StartAttempt` 最终只留下一个 attempt。它验证的是状态边界，
+不是对真实 Provider、余额或持久化系统的实验。
+
+## 1.6 持久 Reservation 与保守结算（006）
+
+006 增加 MySQL 8 migration `migrations/001_quota_reservations.sql`、`quota_reservations`/`provider_attempts` 持久证据、
+Redis Lua 的 reserve/settle/cancel operation key，以及 Gateway 的可选 Reservation Coordinator。启用模式仅接受环境变量：
+`AGENTMESH_QUOTA_MODE=reservation`、`AGENTMESH_QUOTA_MYSQL_DSN`、`AGENTMESH_QUOTA_REDIS_URL`、
+`AGENTMESH_BOOTSTRAP_TENANT_QUOTA_UNITS` 与 `AGENTMESH_RESERVATION_UNITS`；密钥、DSN 和 Redis URL 绝不写入 flags、日志或 Git。
+缺少配置会以 `quota_configuration_missing` 在启动前拒绝；运行中任一存储失败以 503 `quota_unavailable` 在 Provider 前拒绝。
+
+正常顺序固定为 MySQL `creating` → Redis Lua reserve → MySQL `reserved` → 同步写入 attempt started evidence → Adapter。
+流中每 16 个 SSE chunk 或 1 秒持久化一次已成功转发的 rune 下界和 heartbeat；写入失败停止后续转发。只有所有 attempt 都有
+Provider 明示且非 estimated 的 usage 时才按该 usage 退款；缺失或 estimated usage 一律 `settled(estimated)`、保留全部预扣。
+rune 计量是诊断和 reconciler 证据下界，**不是** tokenizer 或精确 Token 账单，也不构成退款依据。
+
+`make demo-stage-4` 会运行可重复的离线故障演示：预扣、首块前 fallback、两次 attempt、流中断后的保守结算，以及 started
+evidence 的 reconciler 裁决。演示使用确定性进程内替身，明确不接触 MySQL/Redis endpoint、Docker 或真实 Provider；它验证控制流，
+不能被写成真实基础设施实验。真实 MySQL/Redis 只有操作者显式提供上述环境后才会连接；本阶段未记录一次真实 endpoint 成功。
+2026-08-29 的受控本机拒绝运行设置了 reservation mode、有效内存 bootstrap tenant 与 mock Provider，但故意不设置任一
+存储变量；服务实际输出 `quota_configuration_missing`、exit 1，且在配置校验前没有 MySQL/Redis 或 Provider 尝试。
+
+## 1.7 真实 MySQL / Redis 受控验证（008）
+
+`make verify-real-storage` 是独立于网关的 opt-in 验证器。它只接受环境变量
+`AGENTMESH_REAL_STORAGE_VALIDATION=1`、`AGENTMESH_QUOTA_MYSQL_DSN`、`AGENTMESH_QUOTA_REDIS_URL` 与
+`AGENTMESH_REAL_VALIDATION_NAMESPACE`；没有命令行凭据，也不会调用 Provider。四项任一缺失时，它输出 JSON
+`verification_unavailable/quota_configuration_missing` 并以 exit 1 结束，网络、DDL、余额写入和 Provider attempt 都为 0。
+
+提供配置意味着操作者确认目标是可处置的非生产 schema 和 Redis namespace。验证器只从既有 migration 补建缺失表；已有表只做
+列、索引和约束形状核对，不执行 ALTER/DROP。每次运行产生独有 tenant/request/reservation 标识，实测 reserve→settle、
+reserve→cancel、started 与无 attempt 两类 reconciler 恢复及重放；随后仅删除本次已知行/key，保留 migration 表。stdout 是脱敏
+JSON 摘要，绝不含 DSN、URL、密码、prompt 或响应。若没有真实环境，受控拒绝是正确结果，不能改写成真实基础设施通过。
+2026-08-29 本机实际执行该命令时，四项环境变量均不存在，输出为 `verification_unavailable` /
+`quota_configuration_missing`、`network_attempts=0`、`provider_attempts=0`、exit 1；因此本仓库仍没有一次真实 MySQL/Redis
+endpoint 成功事实。
+
+## 1.8 V0 验收归档（009）
+
+下表是截至 `e354a85` 的公开能力索引。它把可运行代码、离线/替身验证与真实外部成功分开描述；未写为“已验证”的项不能据此推断为生产可用。
+
+| 阶段 | 公开提交 | 已有证据 | 明确边界 |
+| --- | --- | --- | --- |
+| 001 | `e7d0a30` | loopback mock SSE、两个 CLI、首块前 fallback、取消传播；`make demo-stage-1` | 不调用真实 Provider |
+| 002 | `d6e96f1` | Ark SSE/Ollama NDJSON Adapter 与 fixture 测试 | 本机无 Provider 配置，仅有受控拒绝 |
+| 003 | `87b9d59` | API Key hash/prefix、常量时间比较、tenant route 与 0 Provider 拒绝测试 | tenant/key 为内存 bootstrap，不是管理面持久化 |
+| 004 | `d825f23` | 有界安全 trace/usage 摘要、tenant-scoped 查询、stage-1 demo | 非 OTel/Prometheus、非账单记录 |
+| 005 | `bdad00f` | Reservation 状态与并发边界的内存验证 | 不代表 Redis 预扣或持久化余额 |
+| 006 | `d1bf58a` | MySQL/Redis 适配、Lua、attempt 证据、reconciler 与进程内故障 demo | demo 不接触真实 endpoint；rune 不是精确 token 账单 |
+| 007 | `1741438` | Go 文件 LF 属性与 `gofmt -l .` 归零 | 仅跨平台工位卫生 |
+| 008 | `e354a85` | 真实存储验证器、migration 形状核验、namespace-scoped recovery 编排 | 本机缺配置，真实运行是 0 网络尝试的受控拒绝 |
+
+归档重跑曾暴露 008 引入的 quota-disabled typed-nil 回归：`*Coordinator` 赋给 `StreamGate` 接口后会绕过 nil
+判断，导致认证后的 chat 请求 panic。009 将配置函数改为返回接口类型的无类型 nil，并增加两个并发真实 HTTP/SSE
+fallback 回归请求；它恢复既有 mock 路径，不代表新的真实 Provider 或存储验证。
+
+2026-08-29 的归档实测结果：`make demo-stage-1` 通过（health 200、两个 CLI 返回 `mock response`、trace 200，
+`mock-primary` 首块前失败后由 `mock-fallback` 成功）；`make demo-stage-4` 通过（in-process doubles，未访问
+MySQL/Redis/Docker）；`make verify-real-storage` 保持 `verification_unavailable` / `quota_configuration_missing`、
+`network_attempts=0`、`provider_attempts=0`、exit 1 的受控拒绝。
+
+关键设计选择见公开决策：[Provider/Router 边界](../../decisions/001-provider-adapter-boundary.md)、[Reservation 非 TCC](../../decisions/002-reservation-settlement-boundary.md)、[暂缓 gRPC](../../decisions/003-grpc-deferred.md)、[estimated usage 不退款](../../decisions/004-estimated-usage-no-refund.md)。
+
+本轮验收后的 usage outbox 与逐项对账已由 011 完成；由操作者提供专用非生产 MySQL/Redis 后重跑
+`make verify-real-storage` 仍是未完成的真实环境实证，不能写成已完成。
+
+## 1.9 Usage Ledger（011）
+
+011 在 `migrations/002_usage_ledger.sql` 定义 `usage_outbox` 和 `usage_records`。每个新的 terminal Reservation 在其
+MySQL 终态更新所在的同一事务写入安全 outbox snapshot；显式 drain 才会以 `reservation_id` 幂等投影为 usage record。
+操作者必须先显式应用 002 migration；历史 terminal Reservation 不会被回填，因为不能补造当时的可信结算证据。
+
+`go run ./cmd/usage-outbox-drain` 只投影 record，`go run ./cmd/usage-reconcile` 只读对账。两者仅从
+`AGENTMESH_QUOTA_MYSQL_DSN` 和 `AGENTMESH_QUOTA_REDIS_URL` 读取存储配置；缺任一配置时，在连接前输出
+`verification_unavailable/quota_configuration_missing`、`network_attempts=0`、exit 1。2026-08-30 本机已实际复核
+该受控拒绝，未连接 MySQL/Redis。
+
+对账仅逐 reservation 比较 MySQL 终态、outbox、usage record 和对应 Redis settle/cancel operation，结果为
+`reconciliation_complete`、`outbox_missing`、`usage_record_missing`、`redis_operation_missing` 或 `ledger_mismatch`。
+它不重建 Redis 全局余额、不退款、不补写、不自动修账。usage record 是已结算的安全摘要，不是 tokenizer、价格或精确账单；
+本机仍没有真实 MySQL/Redis endpoint 成功实证。
+
+## 1.10 持久租户与本地 API Key 生命周期（013）
+
+013 新增手动 MySQL 8 migration `migrations/003_tenant_api_keys.sql`：`tenants`、有序的
+`tenant_model_routes` 与 `api_keys`。Key 记录只含不可猜测 `key_id`、唯一 prefix、SHA-256 digest、状态与安全时间摘要；
+不保存原始 Key、admin token、DSN、prompt 或响应。操作者必须先备份 schema 并显式应用 migration；一旦存在身份数据，
+关闭持久模式并保留数据才是常规回退，不能以 drop table 回退。
+
+默认仍是 003 的 Bootstrap 内存模式，供离线 stage-1 demo 使用。持久模式只在同时设置
+`AGENTMESH_AUTH_STORE=mysql`、`AGENTMESH_AUTH_MYSQL_DSN` 与 `AGENTMESH_ADMIN_TOKEN` 时启用；缺任一项在连接和
+Provider attempt 前受控拒绝，不会回退到 bootstrap 覆盖已保存身份。每个业务请求直接读取 Key 状态，撤销后的下一请求即以
+401 `auth_failed` 拒绝。持久模式也保持 002 的 Provider 边界：tenant route 只能是当前运行时 Provider 选择的合法有序子集，
+不能混用 mock 与真实 Adapter。
+
+服务仍只允许 `127.0.0.1:PORT`。仅持久模式注册本地管理端点：
+
+```text
+POST   /admin/tenants
+POST   /admin/api-keys
+DELETE /admin/api-keys/{key_id}
+Authorization: Bearer <AGENTMESH_ADMIN_TOKEN>
+```
+
+管理 token 与 tenant API Key 完全分离，固定长度摘要比较在任何业务 body 解码前完成；失败统一为
+401 `admin_auth_failed`。`POST /admin/api-keys` 只在成功响应中一次性返回原始 Key 和 `key_id`，并附带 `Cache-Control: no-store`；之后只能按 key ID
+撤销，不能查询或恢复原始值。013 的 migration、repository、管理 API 与离线 HTTP 测试已覆盖；本机尚未配置真实 MySQL，
+因此没有把替身结果写成真实持久化实证。
+
+019 修复了首次部署的空库启动死锁：仅当 `tenants`、`tenant_model_routes`、`api_keys` 三表均无记录时，持久模式可启动为
+本地管理引导态。此时没有有效 tenant Key，所有业务请求仍在读取 body、路由、限流、配额或 Provider 前以 401 `auth_failed`
+拒绝；只有已有 admin token 的回环管理面可创建首个合法 tenant/Key。任一表有残留、routes 缺失或无效、或读取失败都不会被
+当作空库，服务保持启动拒绝。认证和 route 读取继续每请求直读 Store，不缓存；离线替身覆盖该行为，但本机仍没有真实 MySQL
+持久认证成功实证。
+
+## 1.11 真实 Provider 受控联调（014）
+
+`make verify-real-provider` 是 002 Ark/Ollama Adapter 的独立 opt-in 联调入口。当前 shell 必须先显式设置
+`AGENTMESH_REAL_PROVIDERS` 为 `ark`、`ollama` 或顺序固定的 `ark,ollama`；预检只要求所选 Provider 的变量：Ark 为
+`ARK_BASE_URL`、`ARK_MODEL`、`ARK_API_KEY`，Ollama 为 `OLLAMA_BASE_URL`、`OLLAMA_MODEL`。凭据只保留在该进程环境，
+不通过 flags、文件、日志、聊天或 Git 传递。缺少选择、选择非法或缺少所选变量时，脚本不启动网关、不创建 Provider 网络尝试，
+只输出脱敏 JSON 并非零退出：
+
+```json
+{"status":"verification_unavailable","code":"provider_configuration_missing","network_attempts":0,"provider_attempts":0}
+```
+
+配置完整时，脚本临时生成 Bootstrap/API Key，启动 `127.0.0.1` 网关并以同一选择构造 tenant route、`--providers` 与一条
+固定 stream 请求。只选一个 Provider 时没有 fallback；双 Provider 才保留既有的“Ark 首块前失败才尝试一次 Ollama fallback”
+行为，首块后不切换。try/finally 会停止子进程、删除临时产物并恢复被改写的环境变量。摘要只包含状态、稳定结果码、尝试数和
+Provider 名称，绝不包含 endpoint、模型、Key、prompt、delta 或上游原文。
+
+2026-08-30 本机实际执行该入口时五项环境变量均未提供，得到上述受控拒绝；没有 Ark/Ollama 网络请求或真实流成功事实。021 修正
+验证预检后，2026-09-01 以 `AGENTMESH_REAL_PROVIDERS=ollama` 和本机 `qwen2.5:7b` 实际完成一次：
+`verification_completed`、`success`、1 次网络/Provider attempt、Provider 为 `ollama`。这只证明该次本机 Ollama endpoint
+与单 Provider SSE 的互操作；Ark 仍只有 fixture，且一次成功不能推断成本、性能、配额或生产可用性。
+
+## 1.12 每租户内存令牌桶限流（012）
+
+012 为已认证的 `POST /v1/chat/completions` 增加可选的每租户、每进程请求限流。仅当当前 shell 同时设置
+`AGENTMESH_RATE_LIMIT_PER_MINUTE` 与 `AGENTMESH_RATE_LIMIT_BURST`（均为正整数）才启用；两者都缺失时保持原行为，
+只设置其一或任何非法值会在构造 Provider 前以 `rate_limit_configuration_invalid` 退出。它不读取 Key、DSN 或其他凭据。
+
+门禁在 API Key 鉴权之后、JSON body 解码和任何 model 路由、Reservation 或 Provider attempt 之前运行。超限响应为
+429 `rate_limited`，并以 `Retry-After` 给出向上取整的下一枚令牌可用秒数；`quota_exhausted` 仍只表示既有 Token
+配额/Reservation 拒绝。认证失败不建桶也不消耗令牌；health、trace 和管理面不受该本地门禁影响。
+
+桶初始装满，每个已认证聊天请求消耗一枚令牌，并按每分钟配置连续补充。每次准入会回收连续 15 分钟未访问的 bucket，
+单进程最多保留 10,000 个 bucket；满载且没有可安全回收的闲置 bucket 时，新 tenant 以既有 `rate_limited` 429 被拒绝，
+不会删除活跃 tenant 或无限增长。该实现只保存在当前进程内存，重启即清空，多个 API 进程不会共享状态；它不是 Redis、
+分布式限流、持久化租户策略或精确 Token 计费的承诺。
+
+`cmd/api` 使用 5 秒 `ReadHeaderTimeout`、15 秒 `ReadTimeout` 与 60 秒 `IdleTimeout` 限制慢头、慢请求和空闲连接。
+为了不以固定墙钟截断合法 SSE，`WriteTimeout` 明确保持 0；流式资源回收仍依赖客户端断连取消与 Provider 自身超时，
+这不是无限长连接或生产级慢客户端保护的承诺。
+
+## 1.13 HTTP 契约入口（015）
+
+当前 HTTP 事实的单一入口是 [HTTP 契约](../../specs/003-local-api-key-gate/contract.md)：它按端点记录 tenant/admin
+鉴权、限流、body 解码、路由、配额与 Provider attempt 的实际顺序，以及 `rate_limited`、`Retry-After`、
+`X-AgentMesh-Trace-ID`、trace 404 收敛和管理面边界。该文档描述的是 `6753800` 的实现，不把本地替身、受控拒绝或
+未配置的真实环境写成成功实证。
+
+## 1.14 本地管理 API 演示（018）
+
+`make demo-admin` 在单一短生命周期的回环 HTTP 进程中演示管理链路：创建 tenant/Key（201）→ chat 200 → 撤销（204）
+→ 原 Key chat 401 `auth_failed` → 重建 Key 后 chat 200。输出仅含步骤、HTTP 状态、稳定错误码和 mock Provider 名称；原始 Key
+只在进程内的 admin 创建响应与后续请求之间传递，不打印、落盘或进入日志。
+
+该命令使用演示专用内存 lifecycle，进程退出即丢失所有状态。它不启动 `cmd/api` 的持久 auth mode，不连接 MySQL、Redis、
+Ark、Ollama 或 Docker，也不证明 013 的 migration、持久 Store 或真实 Key 生命周期已成功运行。
+
+## 1.15 本机回环并发与延迟评测（017）
+
+```powershell
+make benchmark-local
+```
+
+该命令启动短生命周期 `127.0.0.1` mock 网关，并以临时内存 tenant/API Key 完整消费 SSE chat 响应。它默认在预热后执行
+5 轮、每轮 200 请求、20 并发，另启动 1,000 个并发限流调用者；为避免把 Windows 的瞬时 socket 建连上限混入限流结论，
+该场景的 loopback HTTP 客户端最多使用 100 条连接（该值也写入报告）。原始 JSON 自动写入被 Git 忽略的
+`.private/benchmark-results/`，同时输出不含 Key 的安全报告。报告带当前 Git commit、运行时间、Go 版本、CPU、GOMAXPROCS、
+完整参数、所有样本成功/失败计数、成功样本 p50/p95/p99、吞吐以及限流 200/429/其他状态/Provider attempt 计数。
+
+分位数只从同一次运行的成功 SSE 原始样本计算；任意请求失败、SSE 未完成或限流断言失败时，报告仍会落盘并以非零退出，不能拿剩余
+成功样本冒充全通过。限流场景只断言单进程允许数不超过 burst、429 不进入 Provider，不是 Redis 预扣、跨进程或生产容量证据。
+所有数字均仅描述本机 loopback HTTP、鉴权、路由与 mock 流；不代表真实 Ark/Ollama 首 token、MySQL/Redis、跨机网络、成本或 SLO。
+
+## 2. 问题边界
+
+### 要解决
+
+- 多个 Agent 应用重复实现模型接入、SSE、用量统计、超时和取消的问题；
+- 不同租户的 API Key、并发和 Token 预算隔离问题；
+- 上游模型首字节前故障时的可控降级；
+- 模型调用缺少可观测性，无法定位慢请求、失败和成本的问题。
+
+### 首版不解决
+
+- 不复刻 One API 或 Higress 的完整能力；
+- 不实现三个以上 Provider；
+- 不实现流式输出开始后的无缝模型切换；
+- 不做语义缓存、复杂账单、Kubernetes、多 Agent 市场。
+
+## 3. 总体架构
+
+```mermaid
+flowchart LR
+    C1["SQL Sentinel"] --> API["AgentMesh HTTP API"]
+    C2["Document Summary CLI"] --> API
+    API --> AUTH["API Key / Tenant"]
+    AUTH --> RATE["每进程每租户令牌桶"]
+    RATE --> QUOTA["Redis Lua Token 配额"]
+    QUOTA --> ROUTER["Provider Router"]
+    ROUTER --> ARK["Ark / 豆包"]
+    ROUTER --> OLLAMA["Ollama"]
+    ROUTER --> SSE["SSE Stream Relay"]
+    SSE --> C1
+    SSE --> C2
+    API --> DB[("MySQL")]
+    API --> OBS["Eino Callback + OTel"]
+    OBS --> METRICS["Prometheus / Grafana"]
+```
+
+## 4. 关键设计
+
+### 4.1 多租户与权限
+
+- API Key 只保存哈希值和前缀；明文只在创建时返回一次；
+- 每个 Key 绑定 `tenant_id`、可用模型、速率上限和 Token 周期预算；
+- JWT 用于管理后台登录；Casbin 控制平台管理员、租户管理员和开发者的管理权限；
+- 业务调用只凭 API Key，不把 JWT 混入服务间接口。
+
+当前 013 只提供回环本地的环境 admin token，不实现 JWT、Casbin、远程管理面或多角色权限模型。
+
+### 4.2 Provider 路由与降级
+
+- V0 支持 Ark/豆包与 Ollama；路由依据租户允许列表、显式模型选择和健康状态；
+- 在第一个 SSE 数据块发送给客户端前，上游连接失败可以尝试备用 Provider；
+- 首 Token 已发送后禁止切换 Provider。此时返回规范化流错误，由客户端发起“重新生成”；
+- 每次 Provider attempt 都单独记录并累计用量；首 Token 前重试不覆盖第一次 attempt 已产生的 input 成本；
+- Provider 实现通过 Adapter 隔离，路由通过 Strategy 实现，不泄漏到业务层。
+
+### 4.3 SSE、超时与取消
+
+- 每个 HTTP 请求创建根 `context.Context`；客户端断连、超时或主动取消时向下游传递取消；
+- 上游 HTTP 请求、Eino Stream、内部 goroutine 都监听同一派生 Context；
+- 流结束时统一关闭 channel、停止计时器、回收临时资源；
+- 测试通过主动断开 N 次 SSE 连接后，验证 goroutine 数回到稳定基线。
+
+### 4.4 配额与限流
+
+- Redis Lua 在单次脚本中检查与扣减 Token 预算，避免并发下超额；
+- 当前令牌桶按 tenant 限制单位时间请求数，但只在单个 API 进程内存中生效；跨进程协调仍须 Redis 或其他共享存储；
+- V0 只验证预扣与正常路径结算；V1 补齐 Reservation 状态机、崩溃恢复和异步账单，不能把 V0 当成生产级计费链路；
+- 对流式请求，预扣保守预算；只有完整 Provider usage 可用时按其结算。不可用时保存已转发 rune 的“本地可观测下界”，标记 estimated，但不以此证明可退款或精确 Token 账单；
+- 用量账单通过 outbox 异步写 MySQL，热路径不做重型聚合。
+
+### 4.5 Reservation 状态机（V1）
+
+Reservation 的终态只有 `settled` 与 `cancelled`；`expired_pending` 是等待 reconciler 裁决的中间状态，不是终态。
+
+```mermaid
+stateDiagram-v2
+    [*] --> creating: MySQL 持久化 reservation
+    creating --> reserved: Redis 预扣成功
+    creating --> cancelled: Redis 预扣失败 / 本地拒绝
+    reserved --> cancelled: 本地拒绝或确认未发起 Provider
+    reserved --> streaming: 已发起任一 Provider attempt
+    streaming --> settled: 成功、失败、断流或客户端取消
+    reserved --> expired_pending: 心跳超时
+    streaming --> expired_pending: 心跳超时 / 进程崩溃
+    expired_pending --> cancelled: 无 attempt 痕迹
+    expired_pending --> settled: 有 attempt / 已转发计量
+```
+
+- `cancelled` 只适用于配额/限流拒绝，或能确认 Provider attempt 从未发起的本地失败；
+- 任一 attempt 发起后，即使首字节前失败、流中断或客户端取消，也必须 `settled`；释放的只能是确定未使用的预约额度；
+- `provider_attempts` 的“已发起”标记必须在调用 Provider Adapter 前持久化；一旦 Adapter 调用已经开始，哪怕网络错误无法判断请求是否到达上游，也保守地按 `settled` 处理；
+- fallback attempt 的 input 与已转发 output 用量累加，路由器在下一次 attempt 前重新检查 Reservation 剩余额度；
+- `quota_reservations` 在发起 Provider 前持久化 `reservation_id`、`request_id`、状态、attempt 痕迹、已转发文本/本地 Token 计量、心跳和版本号；reconciler 据此幂等裁决；
+- Provider 未提供 usage 时，本地计量只反映网关确认已发送/转发的内容；其不足以证明剩余额度未被上游消耗，因此本阶段不退款，并把终态标为 `settled(estimated)`。
+
+### 4.6 可观测性与版本化
+
+- 使用 Eino Callback 记录模型、Provider、模型版本、Prompt 版本、Token、首 Token 延迟、总耗时、错误与取消原因；
+- 通过 OpenTelemetry 贯穿 trace_id，Prometheus 暴露指标；
+- 敏感 Prompt、参数和响应只记录脱敏摘要或经过加密、访问审计后的内容；
+- 评测和成本统计绑定 `model_version + prompt_version + dataset_version`。
+
+## 5. 技术栈与选型理由
+
+| 技术 | 用途 | 为什么需要 |
+| --- | --- | --- |
+| Go / net-http / Context | API、SSE、取消传播 | 流式模型调用本身要求长连接与资源回收 |
+| Eino / Eino Ext | 模型适配、流和 Callback | 避免业务直接耦合具体 Provider |
+| Go-zero | 管理面 REST API、中间件 | 管理端是标准的配置与权限接口 |
+| MySQL + `database/sql` | Reservation/attempt 持久证据 | 版本条件更新与可恢复的配额状态；未引入 ORM |
+| Redis + Lua | 限流、Token 预扣与结算 | 原子扣减和高频热路径 |
+| JWT + Casbin | 管理面鉴权与 RBAC | 多租户后台必须区分操作权限 |
+| Viper + Zap | 多环境配置、结构化日志 | Provider 配置和故障定位需要规范化 |
+| OTel + Prometheus | Trace、指标、告警 | 验证延迟、失败、取消和成本 |
+| Docker Compose | 本地运行 Ark Mock、Ollama、Redis、MySQL | 一键复现开发和测试环境 |
+
+`gRPC` 不是首版必选。只有 AgentRunner 被独立为进程且需要同步强类型调用、进度流和跨进程取消时才引入。
+
+## 6. 数据模型（建议）
+
+- `tenants`：租户信息、状态、默认配额；
+- `api_keys`：Key 前缀、哈希、所属租户、权限与状态；
+- `model_routes`：租户可用模型、优先级、故障策略；
+- `quota_reservations`：请求 ID、预扣额度、状态、attempt 痕迹、本地计量、心跳、版本；
+- `provider_attempts`：每次路由/降级尝试的 Provider、模型、开始时间、usage 与错误；
+- `usage_records`：请求 ID、模型、Token、计费单位、延迟、结果；
+- `usage_outbox`：与 Reservation 状态一同提交的异步账单事件；
+- `prompt_versions`：版本号、模板摘要、状态、发布时间。
+
+## 7. API（建议）
+
+- `POST /v1/chat/completions`：OpenAI 风格模型调用，支持 `stream=true`；
+- `POST /v1/agent/runs`：规划接口，V0 不实现；只有确需托管 Agent 生命周期时再引入；
+- `POST /admin/api-keys`：013 已实现为仅回环、admin token 鉴权的创建 Key；
+- `GET /admin/usage`：按租户和模型查询用量；
+- `GET /health/providers`：Provider 健康状态。
+
+## 8. 验收与指标
+
+使用本地 mock Provider 单独测网关能力，真实模型只记录端到端体验：
+
+- 网关自身增加的 P99 延迟；
+- 固定并发下成功率、错误分类和限流正确率；
+- 首 Token 前降级成功率；
+- 主动断连后的取消传播时间和 goroutine 泄漏测试；
+- 租户 A/B 配额隔离测试；
+- 同一租户 1000 并发预扣测试：Redis Lua 结果不能透支预算；
+- Token 预扣和最终结算一致性。
+- Reservation 崩溃恢复、重复结算/取消幂等和 Provider usage 差异标记（V1）。
+
+## 9. 推荐目录
+
+```text
+agentmesh/
+  cmd/{api,summary-cli}/
+  internal/{auth,tenant,quota,router,provider,stream,usage,observability}/
+  pkg/{einoadapter,contracts}/
+  migrations/
+  deployments/docker-compose.yml
+  tests/
+```
+
+## Usage Kafka projection
+
+Spec 024 adds an asynchronous projection of the existing terminal usage
+ledger. `quota_reservations`, `usage_outbox`, and `usage_kafka_outbox` are
+written together in the terminal MySQL transaction. Kafka is used only for
+delivery to a read projection; it is not the quota source of truth.
+
+The event contract is intentionally limited to identifiers, model, final
+state, operation version and aggregate usage units. Prompt, response, API key,
+bearer token, endpoint and raw token text are not accepted by the strict event
+decoder or emitted by the SQL snapshot.
+
+Outbox relays use a bounded MySQL ownership lease (`lease_owner` and
+`lease_until`) with `FOR UPDATE SKIP LOCKED`. Multiple relay processes can
+therefore scan the same outbox without concurrently owning a row. If a relay
+crashes, expiry makes the row eligible for another relay; a stale relay cannot
+overwrite the new owner's publish or retry result. This preserves at-least-once
+Kafka delivery while removing the former single-relay assumption.
+
+Run deterministic tests with:
+
+```powershell
+go test -count=1 ./internal/usagekafka ./internal/reservation
+```
+
+Start the isolated local dependencies with:
+
+```powershell
+docker compose -f deployments/kafka-usage-compose.yml up -d --wait
+go run ./cmd/usage-kafka-smoke
+docker compose -f deployments/kafka-usage-compose.yml down
+```
+
+The smoke command uses `127.0.0.1:13309` for MySQL and `127.0.0.1:19093` for
+Kafka by default. Override them with
+`AGENTMESH_USAGE_KAFKA_MYSQL_DSN` and `AGENTMESH_USAGE_KAFKA_BROKERS`; it emits
+JSON only after a real outbox publish, Kafka consume, duplicate delivery and
+MySQL projection check succeed.
+
+## 本地工程验收与面试演示
+
+本轮提供真实依赖 CI、完整链路负载/崩溃/双实例验收、OpenAPI 契约和一键本地演示。操作与证据边界见 [工程验收说明](../../docs/engineering-verification.md)，接口见 [OpenAPI](../../docs/openapi.json)。联合 Python SDK 位于 AgentMesh 的 `sdks/python`；真实模型与云端 commissioning 按联合运维手册执行。
+
+双控制台上线与回退方案：[WEB-PRODUCTION](../../deployments/backend-stack/WEB-PRODUCTION.md)。源码和受控验证不等同于真实 Clerk 或云域名已验收。
+
+</details>
