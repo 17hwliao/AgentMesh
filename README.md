@@ -1,8 +1,126 @@
+<p align="center">
+  <img src="docs/assets/readme-mark.svg" width="88" height="88" alt="AgentMesh" />
+</p>
+
+<h1 align="center">AgentMesh</h1>
+
+<p align="center"><strong>统一模型入口，让每次调用有路由、有预算、可追踪。</strong></p>
+
+<p align="center">多租户 LLM 网关与 Agent Runtime · Go / MySQL / Redis / Kafka</p>
+
+<p align="center">
+  <a href="#能力概览">能力概览</a> &nbsp;·&nbsp;
+  <a href="#快速体验">快速体验</a> &nbsp;·&nbsp;
+  <a href="#部署与接入">部署与接入</a> &nbsp;·&nbsp;
+  <a href="#文档地图">文档地图</a>
+</p>
+
+---
+
+AgentMesh 为多个 AI 应用提供统一的模型服务，集中处理 Provider 接入、流式传输、租户身份、预算与调用观测。SQL Sentinel 和文档摘要 CLI 通过公开 HTTP 契约使用它；业务应用可以沿用自己的工作流。
+
+| 接入 | 控制 | 追踪 |
+| :--- | :--- | :--- |
+| Ark、Ollama、OpenAI 兼容 Provider；模型目录与客户端协议适配。 | 租户与 Key、模型路由、限流、预算预留及可选人民币钱包。 | 请求 Trace、用量投影、账单关联、Prometheus 与 OpenTelemetry。 |
+
+## 能力概览
+
+| 能力 | 当前实现与阅读入口 |
+| :--- | :--- |
+| **模型与客户端** | 流式/非流式 Chat、工具与 Messages 转换；[OpenCode / Claude Code 接入](docs/client-integration.md)。 |
+| **租户与身份** | MySQL 租户、Key 生命周期、模型授权；[用户管理与私有图片 API](docs/account-images.md)。 |
+| **预算与恢复** | Redis 预留、MySQL 持久账本、取消结算、离线钱包恢复；[后端基线契约](docs/backend-release.md)。 |
+| **金额账单** | 可选人民币钱包、版本化价格、实际 usage 结算与待对账状态；[计费运行契约](docs/backend-roadmap.md#余额与账单)。 |
+| **上下文与缓存** | 受限多轮文本/图片、embeddings、显式启用的语义缓存；[协议与上下文](docs/gateway-protocol-design.md)。 |
+| **独立执行器** | 模型凭据保留在 runner，通过 mTLS 调用；[执行器与缓存说明](docs/backend-roadmap.md)。 |
+| **独立控制台** | 模型目录、聊天、Key 与账单界面；[前端与共享 Clerk 接入](web/README.md)。 |
+
+能力存在于源码中，不等于所有目标环境都已验收。已有千问客户端 Read 往返记录；真实云部署、支付与完整客户端兼容性仍以对应契约和目标环境验证为准。控制台真实 Clerk 邮件与跨控制台会话尚待配置。
+
+## 请求如何经过 AgentMesh
+
+```mermaid
+flowchart LR
+    C["CLI / 应用 / 控制台"] --> G["认证 · 模型授权 · 限流"]
+    G --> B["预算 / 可选金额预留"]
+    B --> R["路由与 Provider / mTLS Runner"]
+    R --> P["Ark / Ollama / 兼容平台"]
+    P --> S["响应转发与取消传播"]
+    S --> L["结算 · 用量账本 · Trace"]
+```
+
+首个数据块之前允许 fallback；流开始后失败不会切换模型。预算单位与人民币钱包分别管理；无法确认用量的金额调用保留 hold，进入待对账状态。具体边界见[运行契约](docs/backend-roadmap.md)。
+
+## 快速体验
+
+### 本机 mock 演示
+
+需要与 [`go.mod`](go.mod) 一致的 Go 工具链，以及 Windows PowerShell。从仓库根目录执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/demo-stage-1.ps1
+```
+
+脚本临时创建 Key，在 `127.0.0.1:18082` 启动 mock 网关，运行摘要与 SQL CLI、查询 Trace，并检查取消传播；完成后清理临时进程与日志。它不调用真实模型，也不启动 Docker、MySQL 或 Redis。请先确保端口空闲。
+
+### 查看控制台
+
+需要 Node.js ≥ 22.12：
+
+```sh
+cd web
+npm ci
+npm run build
+npm start
+```
+
+打开 `http://127.0.0.1:4180/?preview=1` 查看标明样例数据的界面。业务操作需要服务端身份与后端配置；完整说明见 [web/README.md](web/README.md)。
+
+## 部署与接入
+
+AgentMesh 与 [SQL Sentinel](https://github.com/17hwliao/sql-sentinel) 共享可导出的部署模板，源码与生成的私有配置分开保存：
+
+```sh
+git clone https://github.com/17hwliao/AgentMesh.git
+git clone https://github.com/17hwliao/sql-sentinel.git
+cd AgentMesh
+python scripts/export-backend-stack.py --out ../deploy
+```
+
+生成 `AgentMesh/`、`sql-sentinel/`、`deploy/` 同级目录后，按[导出说明](deployments/backend-stack/EXPORT.md)准备私有配置，再阅读[千问接入](deployments/backend-stack/QWEN-RUNBOOK.md)与[上线运维手册](deployments/backend-stack/ROADMAP-RUNBOOK.md)。导出不启动服务，也不覆盖已有部署目录。
+
+单机 Compose 是当前默认部署形态。公开 metrics/admin、钱包恢复、价格续期与证书轮换都应按手册配置；模板不代表真实供应商或云端已经验收。
+
+## 文档地图
+
+| 你想了解 | 从这里开始 |
+| :--- | :--- |
+| 当前运行行为 | [后端基线](docs/backend-release.md) → [核心扩展](docs/backend-expansion.md) → [后续运行契约](docs/backend-roadmap.md) |
+| 接入编程客户端 | [客户端接入与边界](docs/client-integration.md) · [New API 差异](docs/new-api-gap-analysis.md) |
+| 用户、Key 与图片 | [账号与私有图片](docs/account-images.md) · [独立控制台](web/README.md) |
+| 部署与恢复 | [模板导出](deployments/backend-stack/EXPORT.md) · [部署手册](deployments/backend-stack/README.md) |
+| 工程验证与观测 | [工程验收说明](docs/engineering-verification.md) · [OpenAPI](docs/openapi.json) · [本地改进契约](docs/local-improvements.md) |
+| 设计取舍与阶段依据 | [完整文档导航](docs/README.md) · [公开决策](decisions/) · [原始规格](specs/) |
+
+## 开发检查
+
+```sh
+go test ./...
+go vet ./...
+```
+
+真实依赖、并发与部署检查的条件见[工程验收说明](docs/engineering-verification.md)。本机 mock 的吞吐和 fixture 结果只适用于对应实验范围。
+
+## 设计与阶段记录
+
+以下保留原 README 的设计、命令、历史实验及限制，便于追溯。早期切片中的“当前”“尚未实现”属于当时检查点；今天的行为请以上方运行契约为准。规划条目不自动成为已实现能力。
+
+<details>
+<summary><strong>展开原始设计、阶段 001–018 与实验记录</strong></summary>
+
 **2026-10-22 独立控制台**：[前端与共享 Clerk 登录接入](web/README.md)。当前提供本地界面预览、真实 API 适配及受控认证测试；真实 Clerk 邮件/跨控制台登录待配置。
 
 > **2026-10-10 后端版本**：核心能力见 [后端扩展说明](docs/backend-expansion.md)，第三Provider、人民币余额/账单、语义缓存和独立mTLS模型执行器见 [新增运行契约](docs/backend-roadmap.md)。以下阶段记录保留历史口径；真实模型/云/支付尚需环境联调。
-
-# AgentMesh：多租户 LLM 网关与 Agent Runtime
 
 **2026-10-19**：[用户管理和私有图片存储 API](docs/account-images.md)。MySQL 模式补齐用户列表/详情/禁用/路由、Key 元数据与本人身份接口；支持有配额、到期和租户隔离的小图片上传/读取/删除及私有引用识图。
 
@@ -526,3 +644,5 @@ MySQL projection check succeed.
 本轮提供真实依赖 CI、完整链路负载/崩溃/双实例验收、OpenAPI 契约和一键本地演示。操作与证据边界见 [工程验收说明](docs/engineering-verification.md)，接口见 [OpenAPI](docs/openapi.json)。联合 Python SDK 位于 AgentMesh 的 `sdks/python`；真实模型与云端 commissioning 按联合运维手册执行。
 
 双控制台上线与回退方案：[WEB-PRODUCTION](deployments/backend-stack/WEB-PRODUCTION.md)。源码和受控验证不等同于真实 Clerk 或云域名已验收。
+
+</details>
