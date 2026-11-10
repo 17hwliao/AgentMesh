@@ -4,26 +4,20 @@ import {fileURLToPath} from 'node:url';
 import path from 'node:path';
 import {once} from 'node:events';
 import {createHash} from 'node:crypto';
-import {createRemoteJWKSet, jwtVerify} from 'jose';
+import {Failure,fail,secret,validateIdentity,createIdentity} from './auth.mjs';
 
 const root=path.dirname(fileURLToPath(import.meta.url));
 const product=JSON.parse(await readFile(path.join(root,'product.json'),'utf8'));
 const ID=/^[a-zA-Z0-9_-]{1,128}$/;
-class Failure extends Error {constructor(status,code){super(code);this.status=status;}}
-const fail=(status,code)=>{throw new Failure(status,code);};
 const json=(res,status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(data));};
-async function secret(file){if(!file)fail(503,'credential_not_configured');const value=(await readFile(file,'utf8')).trim();if(!value||/[\r\n]/.test(value))fail(503,'credential_invalid');return value;}
 function origin(value,privateOK=false){const u=new URL(value);if(u.username||u.password||u.search||u.hash||u.pathname!=='/'||(!['https:'].includes(u.protocol)&&!(u.protocol==='http:'&&(privateOK||['localhost','127.0.0.1','[::1]'].includes(u.hostname)))))throw Error('invalid_origin');return u.origin;}
 export function validateConfig(input){
  const c={...input};c.origin=origin(c.origin);c.peer_url=origin(c.peer_url);if(c.origin===c.peer_url)throw Error('consoles_require_distinct_origins');
  if(c.backend_url)c.backend_url=origin(c.backend_url,true);
  if(c.public_api_url){const u=new URL(c.public_api_url);origin(u.origin);if(!/^\/v1\/?$/.test(u.pathname)||u.search||u.hash||u.username||u.password||/example\.(com|invalid)$/.test(u.hostname))throw Error('invalid_public_api_url');c.public_api_url=u.origin+'/v1';}
- if(c.production===true&&(!c.origin.startsWith('https:')||!c.peer_url.startsWith('https:')||!c.clerk_publishable_key?.startsWith('pk_live_')||!c.backend_url||!c.members_file||!c.clerk_secret_file))throw Error('production_configuration_incomplete');
+ if(c.production===true&&(!c.origin.startsWith('https:')||!c.peer_url.startsWith('https:')||!c.backend_url||!c.members_file))throw Error('production_configuration_incomplete');
  if(c.production===true){if(new URL(c.origin).hostname.split('.').slice(1).join('.')!==new URL(c.peer_url).hostname.split('.').slice(1).join('.'))throw Error('production_shared_parent_domain_required');if(c.public_api_url&&!c.public_api_url.startsWith('https:'))throw Error('production_public_api_requires_https');}
- if(c.clerk_issuer)c.clerk_issuer=origin(c.clerk_issuer);
- c.authorized_parties=c.authorized_parties||[c.origin,c.peer_url];c.authorized_parties=c.authorized_parties.map(x=>origin(x));
- if(c.clerk_publishable_key){const host=Buffer.from(c.clerk_publishable_key.replace(/^pk_(test|live)_/,''),'base64').toString().replace(/\$$/,'');if(!/^pk_(test|live)_/.test(c.clerk_publishable_key)||!c.clerk_issuer||host!==new URL(c.clerk_issuer).hostname)throw Error('clerk_instance_mismatch');}
- return c;
+ return validateIdentity(c);
 }
 async function body(req,limit=2*1024*1024){const parts=[];let size=0;for await(const p of req){size+=p.length;if(size>limit)fail(413,'body_too_large');parts.push(p);}return Buffer.concat(parts);}
 async function smallJSON(req){try{return JSON.parse((await body(req,16384)).toString());}catch(e){if(e instanceof Failure)throw e;fail(400,'invalid_json');}}
@@ -39,26 +33,17 @@ function queryString(u,p){
 }
 export function createApp(input,dependencies={}){
  const c=validateConfig(input),mesh=product.id==='agentmesh',fetcher=dependencies.fetcher||fetch;
- const configured=!!(c.clerk_publishable_key&&c.clerk_issuer&&c.clerk_secret_file&&c.members_file&&c.backend_url);
- const jwks=dependencies.jwks||(c.clerk_issuer?createRemoteJWKSet(new URL(c.clerk_issuer+'/.well-known/jwks.json'),{timeoutDuration:5000}):null);
- const tokens=new Map(),slots=new Map();let authenticating=0,total=0;
- async function clerk(resource){const r=await fetcher('https://api.clerk.com/v1/'+resource,{headers:{Authorization:'Bearer '+await secret(c.clerk_secret_file)},signal:AbortSignal.timeout(8000),redirect:'error'});if(!r.ok)fail(r.status===404?401:503,'identity_unavailable');return r.json();}
- async function authenticate(req){
-  if(!configured)fail(503,'login_not_configured');
-  if(authenticating>=16)fail(429,'identity_busy');authenticating++;
-  try{
-   const header=req.headers.authorization||'';if(!/^Bearer [A-Za-z0-9_.-]{20,16384}$/.test(header))fail(401,'login_required');
-   let payload;try{({payload}=await jwtVerify(header.slice(7),jwks,{issuer:c.clerk_issuer,algorithms:['RS256'],requiredClaims:['exp','iat','sub','sid','azp'],maxTokenAge:300,clockTolerance:5}));}catch{fail(401,'session_invalid');}
-   if(!ID.test(payload.sub)||!ID.test(payload.sid)||!c.authorized_parties.includes(payload.azp)||payload.sts==='pending')fail(401,'session_invalid');
-   const [session,user]=await Promise.all([clerk('sessions/'+payload.sid),clerk('users/'+payload.sub)]);
-   if(session.status!=='active'||session.user_id!==payload.sub||user.id!==payload.sub||user.banned||user.locked)fail(401,'session_inactive');
-   const email=user.email_addresses?.find(x=>x.id===user.primary_email_address_id);if(email?.verification?.status!=='verified')fail(403,'email_not_verified');
-   const members=JSON.parse(await readFile(c.members_file,'utf8')),m=members[payload.sub];
+ const identity=createIdentity(c,{store:dependencies.sessionStore,fetcher,now:dependencies.now}),configured=identity.configured;
+ const tokens=new Map(),slots=new Map();let total=0;
+ async function authenticate(req,res){
+   const who=await identity.identify(req);
+   res.setHeader('X-Console-Session',who.session_binding);
+   if(!['GET','HEAD'].includes(req.method))identity.checkWrite(req,who);
+   const members=JSON.parse(await readFile(c.members_file,'utf8')),m=members[who.sub];
    if(!m||m.enabled!==true)fail(403,'product_access_required');
-   if(!ID.test(m.tenant_id))fail(503,'membership_invalid');
+   if(m.issuer!==c.oidc_issuer||!ID.test(m.tenant_id))fail(503,'membership_invalid');
    if(!mesh&&(!ID.test(m.project_id)||!['reader','writer','reviewer','admin'].includes(m.role)||!Array.isArray(m.tables)||!m.tables.length||m.tables.length>16||m.tables.some(t=>!ID.test(t))))fail(503,'membership_invalid');
-   return {sub:payload.sub,m,name:user.first_name||m.display_name||'工作空间成员',email:email.email_address};
-  }finally{authenticating--;}
+   return {...who,m};
  }
  async function upstream(p,token,options={}){
   if(!c.backend_url)fail(503,'backend_not_configured');
@@ -103,7 +88,7 @@ export function createApp(input,dependencies={}){
   if(['POST','PATCH'].includes(req.method))console.info(JSON.stringify({event:'console_admin_operation',subject:a.sub,action:req.method+' '+p,status:r.status}));
   if(r.status===204){res.writeHead(204);return res.end();}return json(res,r.status,await r.json());
  }
- return http.createServer(async(req,res)=>{
+ const app=http.createServer(async(req,res)=>{
   res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Frame-Options','DENY');res.setHeader('Cache-Control','no-store');
   res.setHeader('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   let activeSubject;
@@ -111,13 +96,14 @@ export function createApp(input,dependencies={}){
    const u=new URL(req.url,c.origin);
    if(req.method==='GET'&&u.pathname==='/healthz')return json(res,200,{status:'ok',product:product.id});
    if(req.method==='GET'&&u.pathname==='/readyz'){
-    if(!configured)fail(503,'login_not_configured');const [,members]=await Promise.all([secret(c.clerk_secret_file),readFile(c.members_file,'utf8')]);if(!Object.values(JSON.parse(members)).some(m=>m?.enabled===true))fail(503,'no_enabled_members');const r=await upstream('/readyz','');if(!r.ok)fail(503,'backend_not_ready');return json(res,200,{status:'ready',identity:'configured_not_live_verified'});
+    if(!configured)fail(503,'login_not_configured');if(c.email_delivery==='unconfigured')fail(503,'email_not_configured');await identity.ready();const members=await readFile(c.members_file,'utf8');if(!Object.values(JSON.parse(members)).some(m=>m?.enabled===true&&m.issuer===c.oidc_issuer))fail(503,'no_enabled_members');const r=await upstream('/readyz','');if(!r.ok)fail(503,'backend_not_ready');return json(res,200,{status:'ready',identity:'oidc_checked',email_delivery:c.email_delivery,real_email:'not_verified_by_readiness'});
    }
-   if(req.method==='GET'&&u.pathname==='/api/config')return json(res,200,{product:product.id,peer_url:c.peer_url,clerk_publishable_key:c.clerk_publishable_key||null,auth_configured:configured,api_base_url:c.public_api_url||null});
+   if(req.method==='GET'&&u.pathname==='/api/config')return json(res,200,{product:product.id,peer_url:c.peer_url,auth_provider:'casdoor',auth_configured:configured,email_delivery:c.email_delivery,api_base_url:c.public_api_url||null});
+   if(await identity.handle(req,res,u))return;
    if(u.pathname.startsWith('/api/')){
     if(req.headers.origin&&req.headers.origin!==c.origin)fail(403,'origin_forbidden');
     if(req.headers['sec-fetch-site']==='cross-site')fail(403,'origin_forbidden');
-    const a=await authenticate(req);
+    const a=await authenticate(req,res);
     if(req.method==='GET'&&u.pathname==='/api/session')return json(res,200,{subject:a.sub,name:a.name,email:a.email,tenant_id:a.m.tenant_id,project_id:a.m.project_id||null,role:a.m.role||'member',can_manage_keys:mesh&&a.m.can_manage_keys===true,platform_admin:mesh&&a.m.platform_admin===true,tables:a.m.tables||[]});
     if(total>=64||(slots.get(a.sub)||0)>=8)fail(429,'console_busy');total++;slots.set(a.sub,(slots.get(a.sub)||0)+1);activeSubject=a.sub;
     if(u.pathname==='/api/keys'||u.pathname.startsWith('/api/keys/')){await backendToken(a);return await keys(req,res,a,u);}
@@ -147,9 +133,10 @@ export function createApp(input,dependencies={}){
    const ext=path.extname(file);const mime={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.woff2':'font/woff2'}[ext];if(!mime)fail(404,'not_found');
    if(/^assets\/[A-Za-z0-9_.-]+-[A-Za-z0-9_-]{6,}\.(js|css|woff2|svg)$/.test(name))res.setHeader('Cache-Control','public, max-age=31536000, immutable');
    res.writeHead(200,{'Content-Type':mime});res.end(req.method==='HEAD'?undefined:data);
-  }catch(e){if(res.headersSent){res.destroy();}else json(res,e instanceof Failure?e.status:503,{code:e instanceof Failure?e.message:'service_unavailable'});}
+  }catch(e){if(res.headersSent){res.destroy();}else if(req.url.startsWith('/auth/')&&req.headers.accept?.includes('text/html')){res.writeHead(e instanceof Failure?e.status:503,{'Content-Type':'text/html; charset=utf-8'});res.end('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>登录尚未完成</title><main><h1>登录尚未完成</h1><p>登录事务可能已过期，或认证、邮件服务暂不可用。请返回控制台重新发起登录。</p><a href="/">返回控制台</a></main></html>');}else json(res,e instanceof Failure?e.status:503,{code:e instanceof Failure?e.message:'service_unavailable'});}
   finally{if(activeSubject){total--;const left=(slots.get(activeSubject)||1)-1;if(left)slots.set(activeSubject,left);else slots.delete(activeSubject);}}
  });
+ app.on('close',()=>identity.close().catch(()=>{}));return app;
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  const config=process.env.CONSOLE_CONFIG_FILE?JSON.parse(await readFile(process.env.CONSOLE_CONFIG_FILE,'utf8')):{origin:`http://127.0.0.1:${product.port}`,peer_url:`http://127.0.0.1:${product.peer_port}`};

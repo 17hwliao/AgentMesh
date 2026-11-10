@@ -48,6 +48,7 @@ backups/
 /web/node_modules/
 /web/dist/
 console-private/
+identity-private/
 
 /web/console.config.json
 /web/members.json

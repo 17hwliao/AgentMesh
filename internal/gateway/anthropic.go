@@ -13,6 +13,7 @@ import (
 
 // Both external auth styles feed the existing tenant authentication once.
 func anthropicAuth(authenticate func(http.Handler) http.Handler, next http.Handler) http.Handler {
+	secured := authenticate(next)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		key := r.Header.Get("x-api-key")
 		bearer := r.Header.Get("Authorization")
@@ -25,7 +26,7 @@ func anthropicAuth(authenticate func(http.Handler) http.Handler, next http.Handl
 		if key != "" && bearer == "" {
 			clone.Header.Set("Authorization", "Bearer "+key)
 		}
-		authenticate(next).ServeHTTP(&anthropicErrorWriter{ResponseWriter: w}, clone)
+		secured.ServeHTTP(&anthropicErrorWriter{ResponseWriter: w}, clone)
 	})
 }
 func anthropicError(w http.ResponseWriter, status int, kind, code string) {

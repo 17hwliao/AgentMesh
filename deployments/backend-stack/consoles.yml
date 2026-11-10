@@ -1,4 +1,4 @@
-# Optional overlay. Two independent frontends; one shared Clerk identity instance.
+# Optional overlay, combined with identity.yml. Two products share Casdoor SSO.
 # Keep ./console-private out of Git. Each service sees only its own directory.
 x-console: &console
   restart: unless-stopped
@@ -29,4 +29,5 @@ services:
     environment:
       MESH_CONSOLE_DOMAIN: "${MESH_CONSOLE_DOMAIN:?configure MESH_CONSOLE_DOMAIN}"
       SENTINEL_CONSOLE_DOMAIN: "${SENTINEL_CONSOLE_DOMAIN:?configure SENTINEL_CONSOLE_DOMAIN}"
+      AUTH_DOMAIN: "${AUTH_DOMAIN:?configure AUTH_DOMAIN}"
     volumes: ["./Caddyfile.consoles:/etc/caddy/Caddyfile:ro"]

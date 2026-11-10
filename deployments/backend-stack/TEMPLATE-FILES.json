@@ -1,6 +1,7 @@
 {
   "files": [
     "Acceptance.Caddyfile",
+    "CASDOOR-RUNBOOK.md",
     "CONSOLES.md",
     "Caddyfile",
     "Caddyfile.consoles",
@@ -29,6 +30,9 @@
     "es-start.sh",
     "extensions-acceptance.yml",
     "extensions.yml",
+    "identity-local.yml",
+    "identity-setup.py",
+    "identity.yml",
     "init-baseline.sh",
     "init-candidate.sh",
     "init-control.sh",
@@ -53,6 +57,7 @@
     "render-kubernetes.py",
     "setup-extensions.py",
     "setup.py",
+    "sentinel-agent.yml",
     "test-console-setup.py",
     "test-qwen-setup.py",
     "verify-local-improvements.py"

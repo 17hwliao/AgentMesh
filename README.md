@@ -6,7 +6,7 @@
 
 <p align="center"><strong>One model gateway. Routed, budgeted, and traceable.</strong></p>
 
-<p align="center">A multi-tenant LLM gateway and Agent Runtime, built with Go, MySQL, Redis, and Kafka.</p>
+<p align="center">A multi-tenant Go model gateway for OpenAI- and Anthropic-compatible clients, with routing, streaming, usage controls, and billing.</p>
 
 <p align="center">
   <a href="https://github.com/17hwliao/AgentMesh/tree/master"><img alt="Source branch: master" src="https://img.shields.io/badge/source-master-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
@@ -23,7 +23,7 @@
 
 ---
 
-AgentMesh provides a shared model service for AI applications. It handles provider integration, streaming, tenant identity, routing, budgets, and telemetry through a public HTTP contract. SQL Sentinel and the document-summary CLI use the same gateway while keeping their own workflows.
+AgentMesh provides a shared model service for AI applications. It handles provider integration, streaming, tenant identity, routing, budgets, and telemetry through a public HTTP contract. SQL Sentinel uses the gateway for inference and keeps SQL authorization, tool execution, and evidence in its own service.
 
 | Connect | Control | Observe |
 | :--- | :--- | :--- |
@@ -39,9 +39,9 @@ AgentMesh provides a shared model service for AI applications. It handles provid
 | **Monetary billing** | An optional RMB wallet, versioned price catalogs, actual-usage settlement, and pending reconciliation. [Billing contract](docs/backend-roadmap.md). |
 | **Context and caching** | Bounded multi-turn text and image messages, embeddings, and explicitly enabled semantic caching. [Protocol and context](docs/gateway-protocol-design.md). |
 | **Model execution** | A separate runner can hold provider credentials and communicate over mTLS. [Execution and cache contract](docs/backend-roadmap.md). |
-| **Web console** | Model discovery, chat, keys, and billing views. [Console and shared Clerk setup](web/README.md). |
+| **Web console** | Model discovery, text and image requests, keys, billing, and traces. Casdoor provides shared sign-in with separate product permissions. [Console setup](web/README.md). |
 
-Implementation and environment acceptance are recorded separately. Qwen Read round trips have been exercised with two clients; cloud deployment, payments, and complete client compatibility remain subject to the corresponding contracts and target-environment checks. Real Clerk email delivery and cross-console sessions still require configuration.
+Local two-instance checks verified shared balances and key revocation. OpenCode and Claude Code have completed Qwen tool round trips. The Casdoor sign-in and product-permission flow was exercised with a local test inbox. See the [engineering record](docs/engineering-verification.md) and [identity verification](docs/casdoor-verification.md) for the scope of each check. Public deployment, real QQ SMTP delivery, and payment integration remain outside those checks.
 
 ## Request flow
 
@@ -93,7 +93,7 @@ cd AgentMesh
 python scripts/export-backend-stack.py --out ../deploy
 ```
 
-Follow the [export guide](deployments/backend-stack/EXPORT.md), [Qwen setup](deployments/backend-stack/QWEN-RUNBOOK.md), and [operations runbook](deployments/backend-stack/ROADMAP-RUNBOOK.md). Exporting does not start services or overwrite an existing deployment directory.
+Follow the [export guide](deployments/backend-stack/EXPORT.md), [Qwen setup](deployments/backend-stack/QWEN-RUNBOOK.md), and [operations runbook](deployments/backend-stack/ROADMAP-RUNBOOK.md). For the two authenticated consoles, follow the [Casdoor deployment guide](deployments/backend-stack/WEB-PRODUCTION.md). Exporting does not start services or overwrite an existing deployment directory.
 
 Single-host Compose is the default deployment target. Configure private metrics and administration access, wallet recovery, price renewal, and certificate rotation according to the runbook. Templates alone do not establish acceptance for a live provider or cloud environment.
 
@@ -106,7 +106,7 @@ Supporting guides and historical records are currently primarily in Chinese. Thi
 | Runtime behavior | [Backend baseline](docs/backend-release.md) → [Core extensions](docs/backend-expansion.md) → [Runtime extensions](docs/backend-roadmap.md) |
 | Coding clients | [Client integration and limits](docs/client-integration.md) · [New API comparison](docs/new-api-gap-analysis.md) |
 | Accounts, keys, and images | [Account and image APIs](docs/account-images.md) · [Web console](web/README.md) |
-| Deployment and recovery | [Template export](deployments/backend-stack/EXPORT.md) · [Deployment guide](deployments/backend-stack/README.md) |
+| Deployment and recovery | [Template export](deployments/backend-stack/EXPORT.md) · [Deployment guide](deployments/backend-stack/README.md) · [Casdoor and QQ SMTP](deployments/backend-stack/CASDOOR-RUNBOOK.md) |
 | Verification and telemetry | [Engineering verification](docs/engineering-verification.md) · [OpenAPI](docs/openapi.json) · [Local improvements](docs/local-improvements.md) |
 | Design decisions and specifications | [Documentation index](docs/README.md) · [Decisions](decisions/) · [Specifications](specs/) |
 | Earlier design and experiments | [Original README archive](docs/archive/readme-before-english.zh-CN.md) |

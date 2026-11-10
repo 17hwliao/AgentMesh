@@ -46,3 +46,9 @@
   flush_interval -1
  }
 }
+
+{$AUTH_DOMAIN} {
+ encode gzip
+ header Strict-Transport-Security "max-age=31536000"
+ reverse_proxy casdoor:8000
+}

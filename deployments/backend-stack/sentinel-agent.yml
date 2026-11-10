@@ -1,0 +1,9 @@
+# Opt-in website SQL Agent. Add after the existing deployment/console overlays.
+# All model traffic still uses the existing gateway and private application key.
+services:
+  sentinel-api:
+    environment:
+      SQL_SENTINEL_OUTER_AGENT_ENABLED: "true"
+      SQL_SENTINEL_OUTER_MODELS: "${SQL_SENTINEL_OUTER_MODELS:-sql-review}"
+      SQL_SENTINEL_OUTER_CONFIG_VERSION: "${SQL_SENTINEL_OUTER_CONFIG_VERSION:-outer.v1}"
+      SQL_SENTINEL_OUTER_TOOLS_ENABLED: "${SQL_SENTINEL_OUTER_TOOLS_ENABLED:-true}"

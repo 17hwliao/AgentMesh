@@ -19,11 +19,14 @@ compose() {
 running=$(compose ps --status running --services)
 actors=''
 for service in $running; do
-  case "$service" in gateway|usage-relay|usage-worker|sentinel-api|sentinel-relay|sentinel-worker|model-runner|verifier) actors="$actors $service";; esac
+  case "$service" in gateway|usage-relay|usage-worker|sentinel-api|sentinel-relay|sentinel-worker|model-runner|verifier|casdoor|mesh-console|sentinel-console) actors="$actors $service";; esac
 done
 resume() { if [ -n "$actors" ]; then compose start $actors >/dev/null; fi; }
 trap resume EXIT
 if [ -n "$actors" ]; then compose stop $actors; fi
+if printf '%s\n' "$running" | grep -qx 'identity-db'; then
+  compose exec -T identity-db sh -c 'MYSQL_PWD=$(cat /run/secrets/identity_mysql_root) exec mysqldump -uroot --single-transaction --hex-blob --set-gtid-purged=OFF --no-tablespaces casdoor' > "$destination/identity-casdoor.sql"
+fi
 for pair in 'control agentmesh' 'control sentinel_control' 'baseline sentinel' 'candidate sentinel'; do
   set -- $pair
   service=$1

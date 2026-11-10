@@ -207,7 +207,7 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			if toolStream.Complete() != nil {
 				return provider.ErrProtocol
 			}
-			if len(toolStream.Calls) > 0 && finishReason != "tool_calls" {
+			if (len(toolStream.Calls) > 0) != (finishReason == "tool_calls") {
 				return provider.ErrProtocol
 			}
 			return nil
@@ -268,7 +268,7 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 			}
 		}
 		if !finishEmitted && finishReason != "" && (len(input.Tools) > 0 || finishReason != "stop") {
-			if finishReason == "tool_calls" && toolStream.Complete() != nil {
+			if finishReason == "tool_calls" && (len(toolStream.Calls) == 0 || toolStream.Complete() != nil) {
 				return provider.ErrProtocol
 			}
 			if err := emit(provider.Chunk{FinishReason: finishReason}); err != nil {
