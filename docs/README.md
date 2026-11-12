@@ -9,7 +9,7 @@
 ## 推荐阅读路径
 
 1. [项目 README](../README.md)：当前能力、运行方式、已验证事实和限制。
-2. [实施步骤](../实施步骤.md)：V0/V1 路线图与 DoD 对照；“建议”或“后置”不代表已经落地。
+2. [实施步骤](archive/roadmap.zh-CN.md)：V0/V1 路线图与 DoD 对照；“建议”或“后置”不代表已经落地。
 3. `specs/`：每个 feature 的原始范围、任务和高风险契约/迁移计划。
 4. `decisions/`：跨 feature 的持久化设计取舍。
 5. `.private/stage-records/`：本机复盘和真实验证摘要，Git 不跟踪。

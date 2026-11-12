@@ -4,7 +4,7 @@
 
 ## 一条命令演示
 
-将两个仓库放在同一目录，目录名为 `AgentMesh` 和 `sql-sentinel`。准备 Docker/Compose（支持 `!override`）、Python 3、Go 1.26.10 与 OpenSSL。在 AgentMesh 内执行：
+将两个仓库放在同一目录，目录名为 `AgentMesh` 和 `sql-sentinel`。准备 Docker/Compose（支持 `!override`）、Python 3、Go 1.26.11 与 OpenSSL。在 AgentMesh 内执行：
 
 ```sh
 python scripts/demo-local.py --out .private/interview-demo

@@ -10,8 +10,8 @@
 
 <p align="center">
   <a href="https://github.com/17hwliao/AgentMesh/tree/master"><img alt="Source branch: master" src="https://img.shields.io/badge/source-master-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
-  <a href="go.mod"><img alt="Go 1.26.10 or later" src="https://img.shields.io/badge/Go-1.26.10%2B-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
-  <a href="#project-license"><img alt="Project license not specified" src="https://img.shields.io/badge/license-unspecified-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
+  <a href="go.mod"><img alt="Go 1.26.11 or later" src="https://img.shields.io/badge/Go-1.26.11%2B-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
+  <a href="#project-license"><img alt="GNU GPL v3.0 only" src="https://img.shields.io/badge/license-GPL--3.0--only-72e5b2?style=flat&amp;color=72e5b2&amp;labelColor=555555" /></a>
 </p>
 
 <p align="center">
@@ -124,4 +124,4 @@ Earlier stage records, commands, and evidence limits remain in the [archive](doc
 
 ## Project license
 
-This repository currently has no project license file. The badge reports that status; it does not assign a license. Third-party dependency licenses are separate.
+The project source code is licensed under the [GNU General Public License v3.0 only](LICENSE) (`GPL-3.0-only`). Third-party dependencies retain their respective licenses.
