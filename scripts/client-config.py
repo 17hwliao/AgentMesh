@@ -2,7 +2,7 @@
 
 No model request, recharge, global configuration overwrite or embedded API key.
 """
-import argparse,json,os
+import argparse,json,os,re
 from datetime import datetime,timezone
 from pathlib import Path
 import urllib.request,urllib.parse,urllib.error
@@ -13,6 +13,29 @@ def endpoint(raw):
     if u.scheme not in {'http','https'} or not u.hostname or u.username or u.password or u.query or u.fragment or any(c.isspace() for c in raw):raise ValueError('explicit HTTP(S) base URL required without credentials/query/fragment')
     if u.scheme=='http' and u.hostname not in {'127.0.0.1','localhost','::1'}:raise ValueError('remote gateway requires HTTPS')
     base=raw.rstrip('/');return base[:-3] if base.endswith('/v1') else base
+
+def opencode_profile(base_url, model, settings=None):
+    return {
+        '$schema': 'https://opencode.ai/config.json',
+        'model': 'agentmesh/' + model,
+        'small_model': 'agentmesh/' + model,
+        'enabled_providers': ['agentmesh'],
+        'provider': {'agentmesh': {
+            'npm': '@ai-sdk/openai-compatible',
+            'name': 'AgentMesh',
+            'options': {'baseURL': base_url, 'apiKey': '{env:AGENTMESH_API_KEY}'},
+            'models': {model: {'name': 'AgentMesh ' + model, **(settings or {})}},
+        }},
+    }
+
+def standalone_opencode_profile(base_url, model):
+    root = endpoint(base_url)
+    if urllib.parse.urlsplit(root).path or '?' in base_url or '#' in base_url:
+        raise ValueError('standalone base URL must end at the listener or /v1')
+    if not model or len(model) > 512 or not re.fullmatch(r'[a-z0-9-]+/[A-Za-z0-9._:/@+-]+', model):
+        raise ValueError('expected a standalone provider/model ID')
+    return opencode_profile(root + '/v1', model)
+
 def generate(base,model,key_file,out):
     root=endpoint(base);key=key_file.read_text(encoding='utf-8-sig').strip()
     if not key or len(key)>16384 or any(not 33<=ord(c)<=126 for c in key):raise ValueError('invalid private gateway key file')
@@ -39,7 +62,10 @@ def generate(base,model,key_file,out):
     if out.exists():raise ValueError('output directory exists; use a new private directory')
     out.mkdir(parents=True,mode=0o700)
     vision=row['capabilities'].get('vision',False)
-    config={'$schema':'https://opencode.ai/config.json','model':'agentmesh/'+model,'small_model':'agentmesh/'+model,'enabled_providers':['agentmesh'],'provider':{'agentmesh':{'npm':'@ai-sdk/openai-compatible','name':'AgentMesh','options':{'baseURL':root+'/v1','apiKey':'{env:AGENTMESH_API_KEY}'},'models':{model:{'name':'AgentMesh '+model,'limit':{'context':8192,'output':4096},'modalities':{'input':['text','image'] if vision else ['text'],'output':['text']}}}}}}
+    config = opencode_profile(root + '/v1', model, {
+        'limit': {'context': 8192, 'output': 4096},
+        'modalities': {'input': ['text', 'image'] if vision else ['text'], 'output': ['text']},
+    })
     env={'ANTHROPIC_BASE_URL':root,'ANTHROPIC_MODEL':model,'ANTHROPIC_DEFAULT_HAIKU_MODEL':model,'ANTHROPIC_DEFAULT_SONNET_MODEL':model,'ANTHROPIC_DEFAULT_OPUS_MODEL':model,'CLAUDE_CODE_MAX_OUTPUT_TOKENS':'4096','MAX_THINKING_TOKENS':'0','CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC':'1'}
     (out/'opencode.json').write_text(json.dumps(config,indent=2)+'\n',encoding='utf-8')
     (out/'claude-settings.json').write_text(json.dumps({'env':env},indent=2)+'\n',encoding='utf-8')
@@ -77,6 +103,20 @@ exit $clientExit
         if os.name!='nt':p.chmod(0o600)
     return {'status':'PASS','model':model,'tools':True,'vision':vision,'paid_calls':0,'key_embedded':False,'files':4,'output':str(out)}
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--base-url',required=True);p.add_argument('--model',default='domestic-chat');p.add_argument('--key-file',required=True,type=Path);p.add_argument('--out',required=True,type=Path);a=p.parse_args()
-    try:print(json.dumps(generate(a.base_url,a.model,a.key_file,a.out),ensure_ascii=False))
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--base-url', required=True)
+    p.add_argument('--model')
+    p.add_argument('--key-file', type=Path)
+    p.add_argument('--out', type=Path)
+    p.add_argument('--standalone-opencode', action='store_true', help='print an OpenCode 1.x JSON snippet for standalone Chat Completions')
+    a = p.parse_args()
+    try:
+        if a.standalone_opencode:
+            if a.key_file or a.out:
+                p.error('--standalone-opencode takes no key file or output directory')
+            print(json.dumps(standalone_opencode_profile(a.base_url, a.model), indent=2, ensure_ascii=False))
+        else:
+            if not a.key_file or not a.out:
+                p.error('--key-file and --out are required for managed profiles')
+            print(json.dumps(generate(a.base_url, a.model or 'domestic-chat', a.key_file, a.out), ensure_ascii=False))
     except (ValueError,OSError,KeyError) as e:p.exit(1,str(e)+'\n')

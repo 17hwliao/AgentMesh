@@ -2,8 +2,31 @@
 from pathlib import Path
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from datetime import datetime,timedelta,timezone
-import importlib.util,json,tempfile,threading,unittest,shutil,subprocess
+import importlib.util,json,tempfile,threading,unittest,shutil,subprocess,sys
 spec=importlib.util.spec_from_file_location('profiles',Path(__file__).with_name('client-config.py'));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+
+class StandaloneProfiles(unittest.TestCase):
+    def test_cli_preserves_nested_model_id_and_only_references_key_env(self):
+        model = 'local/vendor/model:latest'
+        result = subprocess.run(
+            [sys.executable, m.__file__, '--standalone-opencode', '--base-url', 'http://127.0.0.1:18080/v1', '--model', model],
+            check=True, capture_output=True, text=True,
+        )
+        profile = json.loads(result.stdout)
+        provider = profile['provider']['agentmesh']
+        self.assertEqual(profile['model'], 'agentmesh/' + model)
+        self.assertEqual(list(provider['models']), [model])
+        self.assertEqual(provider['options'], {'baseURL': 'http://127.0.0.1:18080/v1', 'apiKey': '{env:AGENTMESH_API_KEY}'})
+
+    def test_unsafe_snippets_are_rejected(self):
+        for url, model in [
+            ('http://remote.example/v1', 'local/model'),
+            ('http://localhost:18080/other/v1', 'local/model'),
+            ('http://localhost:18080/v1', 'local/{env:PRIVATE_KEY}'),
+            ('http://localhost:18080/v1', 'unqualified'),
+        ]:
+            with self.subTest(url=url, model=model), self.assertRaises(ValueError):
+                m.standalone_opencode_profile(url, model)
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):pass

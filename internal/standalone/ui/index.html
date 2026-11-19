@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; object-src 'none'">
+  <title>AgentMesh 管理控制台</title>
+  <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <div class="brand" aria-label="AgentMesh 管理控制台">
+        <span class="brand-mark" aria-hidden="true">AM</span>
+        <span class="brand-copy">
+          <span class="brand-name">AgentMesh</span>
+          <span class="brand-subtitle">独立控制面</span>
+        </span>
+      </div>
+      <div class="session-actions">
+        <span class="session-label">本机管理会话</span>
+        <button id="logout-button" class="button button-quiet button-small" type="button" hidden>退出登录</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="main" class="page">
+    <div id="global-alert" class="alert" role="alert" hidden>
+      <div class="alert-copy">
+        <span class="alert-label">错误</span>
+        <span id="global-alert-text"></span>
+      </div>
+      <button id="alert-dismiss" class="alert-close" type="button" aria-label="关闭错误提示">×</button>
+    </div>
+    <div id="global-notice" class="notice" role="status" hidden></div>
+
+    <section id="login-view" class="login-layout" aria-labelledby="login-heading">
+      <div class="login-intro">
+        <p class="section-kicker">Administration</p>
+        <h1 id="login-heading">登录独立控制面</h1>
+        <p class="lede">管理本机服务商、模型目录与客户端 Key。管理 Token 仅用于换取当前浏览器的短期会话。</p>
+        <ul class="feature-list">
+          <li><span class="feature-index">01</span><span>配置 OpenAI 兼容服务商并发现模型。</span></li>
+          <li><span class="feature-index">02</span><span>逐项控制模型启用状态与能力标记。</span></li>
+          <li><span class="feature-index">03</span><span>创建和撤销客户端 Key，明文只显示一次。</span></li>
+        </ul>
+      </div>
+      <form id="login-form" class="panel login-card" autocomplete="off">
+        <h2>管理登录</h2>
+        <p class="hint">Token 不会写入浏览器存储，也不会出现在地址栏。</p>
+        <label class="field" for="admin-token">
+          <span>管理 Token</span>
+          <input id="admin-token" name="token" type="password" required autocomplete="off" spellcheck="false" aria-describedby="login-token-hint">
+        </label>
+        <p id="login-token-hint" class="hint">请使用启动时输出的管理凭据。</p>
+        <p id="login-error" class="form-error" role="alert" hidden></p>
+        <button id="login-submit" class="button button-primary button-block" type="submit">登录</button>
+      </form>
+    </section>
+
+    <div id="console-view" hidden>
+      <section id="status-section" class="section" aria-labelledby="status-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Overview</p>
+            <h2 id="status-heading">运行状态</h2>
+          </div>
+          <button id="refresh-state" class="button button-small" type="button">刷新状态</button>
+        </div>
+        <p id="state-timestamp" class="meta-line" aria-live="polite">尚未加载状态。</p>
+
+        <dl class="status-grid" aria-label="控制面运行状态">
+          <div class="stat">
+            <dt>就绪 <span class="term">ready</span></dt>
+            <dd><strong id="stat-ready">—</strong><span id="stat-ready-hint" class="stat-hint"></span></dd>
+          </div>
+          <div class="stat">
+            <dt>修复 <span class="term">repair</span></dt>
+            <dd><strong id="stat-repair">—</strong><span id="stat-repair-hint" class="stat-hint"></span></dd>
+          </div>
+          <div class="stat">
+            <dt>代次 <span class="term">generation</span></dt>
+            <dd><strong id="stat-generation">—</strong><span id="stat-generation-hint" class="stat-hint"></span></dd>
+          </div>
+          <div class="stat">
+            <dt>服务商</dt>
+            <dd><strong id="stat-providers">—</strong><span id="stat-providers-hint" class="stat-hint"></span></dd>
+          </div>
+          <div class="stat">
+            <dt>模型</dt>
+            <dd><strong id="stat-models">—</strong><span id="stat-models-hint" class="stat-hint"></span></dd>
+          </div>
+          <div class="stat">
+            <dt>客户端 Key</dt>
+            <dd><strong id="stat-keys">—</strong><span id="stat-keys-hint" class="stat-hint"></span></dd>
+          </div>
+        </dl>
+
+        <div id="last-error-wrap" class="state-extra" hidden>
+          <h3>最近错误</h3>
+          <pre id="last-error" class="result-output"></pre>
+        </div>
+
+        <div id="local-key-wrap" class="secret-box" hidden>
+          <div class="secret-heading">
+            <div>
+              <p class="section-kicker">仅显示一次</p>
+              <h3>本机调用 Key</h3>
+              <p class="hint">这是服务端本次返回的一次性明文。保存到安全位置后，请立即隐藏。</p>
+            </div>
+            <div class="secret-actions">
+              <button id="copy-local-key" class="button button-small button-primary" type="button">复制</button>
+              <button id="dismiss-local-key" class="button button-small" type="button">已保存，隐藏</button>
+            </div>
+          </div>
+          <pre id="local-key-once" class="secret-value"></pre>
+        </div>
+      </section>
+
+      <section id="usage-section" class="section" aria-labelledby="usage-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Usage</p>
+            <h2 id="usage-heading">用量与冷却</h2>
+            <p class="section-description">窗口汇总来自当前进程状态，明细按 Key、服务商和模型聚合。</p>
+          </div>
+          <button id="refresh-usage" class="button button-small" type="button">刷新用量</button>
+        </div>
+        <p id="usage-timestamp" class="meta-line" aria-live="polite">尚未加载用量。</p>
+        <p id="usage-error" class="form-error" role="alert" hidden></p>
+
+        <div class="summary-grid" aria-label="用量窗口汇总">
+          <article class="summary-card">
+            <span class="summary-label">分钟请求</span>
+            <strong id="usage-minute-requests">—</strong>
+            <span class="summary-hint">minute_requests</span>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">今日请求</span>
+            <strong id="usage-day-requests">—</strong>
+            <span class="summary-hint">day_requests</span>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">今日 Token</span>
+            <strong id="usage-day-tokens">—</strong>
+            <span class="summary-hint">day_tokens</span>
+          </article>
+        </div>
+
+        <div class="subsection-heading">
+          <h3>按 Key / 服务商 / 模型</h3>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">用量明细</caption>
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">服务商</th>
+                <th scope="col">模型</th>
+                <th scope="col">请求</th>
+                <th scope="col">输入 Token</th>
+                <th scope="col">输出 Token</th>
+              </tr>
+            </thead>
+            <tbody id="usage-body">
+              <tr><td colspan="6" class="empty-cell">登录后加载用量。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="subsection-heading">
+          <h3>冷却</h3>
+          <p class="section-description">倒计时每秒更新；到期后刷新可确认最新状态。</p>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">服务商冷却状态</caption>
+            <thead>
+              <tr>
+                <th scope="col">服务商</th>
+                <th scope="col">模型</th>
+                <th scope="col">倒计时</th>
+                <th scope="col">Until</th>
+                <th scope="col">原因</th>
+              </tr>
+            </thead>
+            <tbody id="cooldowns-body">
+              <tr><td colspan="5" class="empty-cell">暂无冷却记录。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="host-section" class="section" aria-labelledby="host-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Host discovery</p>
+            <h2 id="host-heading">本机资源</h2>
+            <p class="section-description">只读扫描本机 Agent，并发现 loopback 上的 Ollama / LM Studio 模型。新模型默认禁用。</p>
+          </div>
+          <div class="section-actions">
+            <button id="scan-agents" class="button button-small" type="button">扫描 Agent</button>
+            <button id="scan-local-models" class="button button-small" type="button">发现本地模型</button>
+          </div>
+        </div>
+        <p id="host-status" class="meta-line" aria-live="polite">尚未扫描本机资源。</p>
+
+        <div class="subsection-heading">
+          <h3>Agent 安装</h3>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">本机 Agent 发现结果</caption>
+            <thead>
+              <tr>
+                <th scope="col">Agent</th>
+                <th scope="col">状态</th>
+                <th scope="col">路径</th>
+              </tr>
+            </thead>
+            <tbody id="host-agents-body">
+              <tr><td colspan="3" class="empty-cell">点击“扫描 Agent”开始只读发现。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="subsection-heading">
+          <h3>本地模型服务</h3>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">本地模型服务发现结果</caption>
+            <thead>
+              <tr>
+                <th scope="col">来源</th>
+                <th scope="col">状态</th>
+                <th scope="col">模型</th>
+              </tr>
+            </thead>
+            <tbody id="local-models-body">
+              <tr><td colspan="3" class="empty-cell">点击“发现本地模型”检查 loopback 服务。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <form id="local-model-import-form" class="panel inset-panel" autocomplete="off">
+          <h3>导入本地模型来源</h3>
+          <div class="form-grid">
+            <label class="field span-3" for="local-model-kind">
+              <span>来源类型</span>
+              <select id="local-model-kind" name="kind">
+                <option value="ollama" selected>Ollama</option>
+                <option value="lmstudio">LM Studio</option>
+              </select>
+            </label>
+            <label class="field span-5" for="local-model-base-url">
+              <span>Base URL</span>
+              <input id="local-model-base-url" name="base_url" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="例如 http://127.0.0.1:11434">
+            </label>
+            <label class="field span-4" for="local-model-slug">
+              <span>Slug <span class="optional">可选</span></span>
+              <input id="local-model-slug" name="slug" type="text" autocomplete="off" spellcheck="false" placeholder="默认使用来源类型">
+            </label>
+            <label class="field span-6" for="local-model-name">
+              <span>显示名称 <span class="optional">可选</span></span>
+              <input id="local-model-name" name="name" type="text" autocomplete="off" placeholder="例如 Local Ollama">
+            </label>
+            <label class="field span-6" for="local-model-confirm">
+              <span>确认</span>
+              <span class="check-label">
+                <input id="local-model-confirm" name="confirm" class="toggle" type="checkbox">
+                我确认导入该来源的模型目录
+              </span>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button id="local-model-import-submit" class="button button-primary" type="submit">导入模型目录</button>
+            <p class="hint">只接受 loopback 地址；导入后 Provider 为无认证，模型默认禁用。</p>
+          </div>
+        </form>
+      </section>
+
+      <section id="providers-section" class="section" aria-labelledby="providers-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Providers</p>
+            <h2 id="providers-heading">服务商</h2>
+            <p class="section-description">测试 /models 只读取上游模型列表，不会发起聊天请求。</p>
+          </div>
+          <button id="refresh-providers" class="button button-small" type="button">刷新服务商</button>
+        </div>
+
+        <div class="section-grid">
+          <form id="provider-form" class="panel inset-panel" autocomplete="off">
+            <h3>添加服务商</h3>
+            <div class="form-grid">
+              <label class="field span-3" for="provider-slug">
+                <span>Slug</span>
+                <input id="provider-slug" name="slug" type="text" required autocomplete="off" spellcheck="false" placeholder="例如 groq">
+              </label>
+              <label class="field span-4" for="provider-name">
+                <span>名称</span>
+                <input id="provider-name" name="name" type="text" required autocomplete="off" placeholder="展示名称">
+              </label>
+              <label class="field span-5" for="provider-auth-type">
+                <span>认证方式</span>
+                <select id="provider-auth-type" name="auth_type">
+                  <option value="bearer" selected>Bearer</option>
+                  <option value="none">无认证</option>
+                </select>
+              </label>
+              <label class="field span-3" for="provider-kind">
+                <span>类型</span>
+                <select id="provider-kind" name="kind">
+                  <option value="openai_compatible" selected>OpenAI 兼容</option>
+                  <option value="agentmesh">AgentMesh 远程</option>
+                  <option value="ollama">Ollama 本地</option>
+                  <option value="lmstudio">LM Studio 本地</option>
+                </select>
+              </label>
+              <label class="field span-7" for="provider-base-url">
+                <span>Base URL</span>
+                <input id="provider-base-url" name="base_url" type="text" inputmode="url" required autocomplete="off" spellcheck="false" placeholder="填写包含协议的完整 API 地址">
+              </label>
+              <label class="field span-5" for="provider-api-key">
+                <span>API Key <span class="optional">可选</span></span>
+                <input id="provider-api-key" name="api_key" type="password" autocomplete="off" spellcheck="false" placeholder="Bearer 凭据">
+              </label>
+              <label class="field span-4" for="provider-tls-insecure">
+                <span>TLS 证书</span>
+                <span class="check-label">
+                  <input id="provider-tls-insecure" name="tls_insecure" class="toggle" type="checkbox">
+                  允许自签或跳过校验
+                </span>
+              </label>
+            </div>
+            <div class="form-actions">
+              <button id="provider-submit" class="button button-primary" type="submit">添加服务商</button>
+              <p class="hint">API Key 只会提交给管理接口，不会在列表中回显。</p>
+            </div>
+          </form>
+
+          <aside class="panel inset-panel result-panel" aria-labelledby="provider-result-heading">
+            <h3 id="provider-result-heading">最近操作</h3>
+            <p id="provider-action-status" class="panel-status">尚未执行服务商操作。</p>
+            <pre id="provider-result" class="result-output" hidden></pre>
+          </aside>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">服务商列表</caption>
+            <thead>
+              <tr>
+                <th scope="col">服务商</th>
+                <th scope="col">Base URL</th>
+                <th scope="col">认证</th>
+                <th scope="col">状态</th>
+                <th scope="col" class="actions-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="providers-body">
+              <tr><td colspan="5" class="empty-cell">登录后加载服务商。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="models-section" class="section" aria-labelledby="models-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Catalog</p>
+            <h2 id="models-heading">模型</h2>
+            <p class="section-description">切换会立即提交 PATCH，并刷新控制面 generation。上游已移除的模型不可路由。</p>
+          </div>
+          <button id="refresh-models" class="button button-small" type="button">刷新模型</button>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">模型目录</caption>
+            <thead>
+              <tr>
+                <th scope="col">公共模型 ID</th>
+                <th scope="col">服务商</th>
+                <th scope="col">启用</th>
+                <th scope="col">上游状态</th>
+                <th scope="col">Tools</th>
+                <th scope="col">Vision</th>
+              </tr>
+            </thead>
+            <tbody id="models-body">
+              <tr><td colspan="6" class="empty-cell">登录后加载模型。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="routing-section" class="section" aria-labelledby="routing-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Routing</p>
+            <h2 id="routing-heading">路由组</h2>
+            <p class="section-description">从已加载模型中选择成员。提交时使用内部模型 ID，列表按公共模型 ID 展示。</p>
+          </div>
+          <button id="refresh-routing-groups" class="button button-small" type="button">刷新路由组</button>
+        </div>
+        <p id="routing-groups-error" class="form-error" role="alert" hidden></p>
+
+        <form id="routing-group-form" class="panel inset-panel" autocomplete="off">
+          <h3>创建路由组</h3>
+          <div class="form-grid">
+            <label class="field span-4" for="routing-group-name">
+              <span>名称</span>
+              <input id="routing-group-name" name="name" type="text" required autocomplete="off" spellcheck="false" placeholder="例如 auto">
+            </label>
+            <label class="field span-5" for="routing-group-description">
+              <span>描述 <span class="optional">可选</span></span>
+              <input id="routing-group-description" name="description" type="text" autocomplete="off" placeholder="用途说明">
+            </label>
+            <label class="field span-3" for="routing-group-enabled">
+              <span>组状态</span>
+              <select id="routing-group-enabled" name="enabled">
+                <option value="true" selected>启用</option>
+                <option value="false">停用</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="subsection-heading picker-heading">
+            <div>
+              <h3>成员模型</h3>
+              <p class="section-description">至少选择一个成员。未勾选模型不会提交。</p>
+            </div>
+          </div>
+          <div class="table-shell model-picker-shell">
+            <table class="model-picker-table">
+              <caption class="sr-only">可选模型</caption>
+              <thead>
+                <tr>
+                  <th scope="col">选择</th>
+                  <th scope="col">公共模型 ID</th>
+                  <th scope="col">服务商</th>
+                  <th scope="col">Priority</th>
+                  <th scope="col">Weight</th>
+                  <th scope="col">成员启用</th>
+                </tr>
+              </thead>
+              <tbody id="routing-model-picker">
+                <tr><td colspan="6" class="empty-cell">模型加载后可选择成员。</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="form-actions">
+            <button id="routing-group-submit" class="button button-primary" type="submit">创建路由组</button>
+            <p class="hint">名称使用小写字母、数字、下划线或短横线。</p>
+          </div>
+        </form>
+
+        <div class="subsection-heading">
+          <h3>已配置路由组</h3>
+        </div>
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">路由组列表</caption>
+            <thead>
+              <tr>
+                <th scope="col">名称</th>
+                <th scope="col">描述</th>
+                <th scope="col">状态</th>
+                <th scope="col">成员</th>
+                <th scope="col" class="actions-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="routing-groups-body">
+              <tr><td colspan="5" class="empty-cell">登录后加载路由组。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="keys-section" class="section" aria-labelledby="keys-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">Access</p>
+            <h2 id="keys-heading">客户端 Key</h2>
+            <p class="section-description">创建或轮换响应中的明文 Key 只显示一次。列表仅保留前缀。</p>
+          </div>
+          <button id="refresh-keys" class="button button-small" type="button">刷新 Key</button>
+        </div>
+
+        <form id="client-key-form" class="panel inset-panel" autocomplete="off">
+          <h3>创建客户端 Key</h3>
+          <div class="form-grid">
+            <label class="field span-4" for="client-key-name">
+              <span>名称</span>
+              <input id="client-key-name" name="name" type="text" required autocomplete="off" placeholder="例如：办公电脑">
+            </label>
+            <label class="field span-2" for="client-key-rpm">
+              <span>RPM <span class="optional">可选</span></span>
+              <input id="client-key-rpm" name="rpm" type="number" min="0" step="1" inputmode="numeric" placeholder="0">
+            </label>
+            <label class="field span-3" for="client-key-daily-requests">
+              <span>每日请求 <span class="optional">可选</span></span>
+              <input id="client-key-daily-requests" name="daily_requests" type="number" min="0" step="1" inputmode="numeric" placeholder="0">
+            </label>
+            <label class="field span-3" for="client-key-daily-tokens">
+              <span>每日 Token <span class="optional">可选</span></span>
+              <input id="client-key-daily-tokens" name="daily_tokens" type="number" min="0" step="1" inputmode="numeric" placeholder="0">
+            </label>
+            <label class="field span-12" for="client-key-allowlist">
+              <span>模型白名单 <span class="optional">可选</span></span>
+              <input id="client-key-allowlist" name="model_allowlist" type="text" autocomplete="off" spellcheck="false" placeholder="公共模型 ID，逗号分隔；留空表示不限">
+            </label>
+          </div>
+          <div class="form-actions">
+            <button id="client-key-submit" class="button button-primary" type="submit">创建 Key</button>
+            <p class="hint">数值填 0 或白名单留空表示不限。</p>
+          </div>
+        </form>
+
+        <div id="created-key-wrap" class="secret-box" hidden>
+          <div class="secret-heading">
+            <div>
+              <p class="section-kicker">仅显示一次</p>
+              <h3>新客户端 Key</h3>
+              <p class="hint">这是创建或轮换响应返回的明文 Key。关闭后无法从列表恢复。</p>
+            </div>
+            <div class="secret-actions">
+              <button id="copy-created-key" class="button button-small button-primary" type="button">复制</button>
+              <button id="dismiss-created-key" class="button button-small" type="button">已保存，隐藏</button>
+            </div>
+          </div>
+          <pre id="created-key-plaintext" class="secret-value"></pre>
+        </div>
+
+        <div class="table-shell">
+          <table>
+            <caption class="sr-only">客户端 Key 列表</caption>
+            <thead>
+              <tr>
+                <th scope="col">名称</th>
+                <th scope="col">前缀</th>
+                <th scope="col">状态</th>
+                <th scope="col">最后使用</th>
+                <th scope="col">限额</th>
+                <th scope="col" class="actions-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="client-keys-body">
+              <tr><td colspan="6" class="empty-cell">登录后加载客户端 Key。</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <noscript>
+      <p class="noscript">此管理页需要启用 JavaScript。</p>
+    </noscript>
+  </main>
+
+  <footer class="site-footer">
+    <p>仅通过本机或受信网络访问。管理会话保存在当前浏览器 Cookie 中。</p>
+  </footer>
+</body>
+</html>

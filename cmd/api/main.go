@@ -27,6 +27,7 @@ import (
 	"agentmesh/internal/ratelimit"     //全局限流运行时、流量控制
 	"agentmesh/internal/reservation"   //资源配额 / 预留系统，限制租户调用额度
 	"agentmesh/internal/runtime"       //AI 后端提供器管理（mock/ark/ollama 大模型）
+	"agentmesh/internal/standalone"
 	"agentmesh/internal/telemetry"
 	"agentmesh/internal/tenant"     //多租户路由解析，租户隔离逻辑
 	"agentmesh/internal/usagekafka" //调用用量统计，Kafka 上报 + MySQL 持久化
@@ -64,11 +65,37 @@ func main() {
 	address := flags.String("addr", "127.0.0.1:18080", "local listen address (must be 127.0.0.1:PORT)")
 	allowContainerListen := flags.Bool("allow-container-listen", false, "allow 0.0.0.0:PORT only for container-local binding") //容器开启后可以提供外部访问
 	providerOrder := flags.String("providers", "mock", "provider route: mock or comma-separated ark,ollama,compatible")
+	standaloneMode := flags.Bool("standalone", false, "run the local SQLite control plane without MySQL/Redis")
+	dataDir := flags.String("data-dir", "", "standalone data directory")
+	adminAddr := flags.String("admin-addr", "127.0.0.1:18081", "standalone administration listen address")
+	rotateLocalKey := flags.Bool("rotate-local-key", false, "rotate the standalone local API key and exit")
+	resetAdminToken := flags.Bool("reset-admin-token", false, "reset the standalone admin token and exit")
+	backupDir := flags.String("backup-dir", "", "back up the standalone data directory and exit")
+	restoreDir := flags.String("restore-dir", "", "restore standalone data from a backup directory before start")
+	maxConcurrent := flags.Int("max-concurrent", 0, "maximum concurrent standalone data requests (0 is unlimited)")
+	ipRequestsPerMinute := flags.Int("ip-rpm", 0, "maximum standalone data requests per client IP per minute (0 is unlimited)")
+	maxBodyBytes := flags.Int64("max-body-bytes", 0, "maximum standalone data request body size (0 is unlimited)")
+	dailyTokenLimit := flags.Int("daily-token-limit", 0, "standalone global daily token ceiling (0 is unlimited)")
 	flags.Usage = func() {
 		fmt.Fprintf(flags.Output(), "Usage: %s [--addr 127.0.0.1:PORT]\n", os.Args[0])
 		flags.PrintDefaults()
 	}
 	_ = flags.Parse(os.Args[1:])
+	if *standaloneMode {
+		if *providerOrder != "mock" || *allowContainerListen {
+			log.Fatal("standalone_flag_conflict")
+		}
+		if err := standalone.Run(ctx, standalone.Config{
+			DataDir: *dataDir, DataAddr: *address, AdminAddr: *adminAddr,
+			RotateLocalKey: *rotateLocalKey, ResetAdminToken: *resetAdminToken,
+			BackupDir: *backupDir, RestoreDir: *restoreDir,
+			MaxConcurrent: *maxConcurrent, IPRequestsPerMinute: *ipRequestsPerMinute,
+			MaxBodyBytes: *maxBodyBytes, DailyTokenLimit: *dailyTokenLimit,
+		}); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	// 校验监听地址防止消息外泄
 	if err := validateServerAddress(*address, *allowContainerListen); err != nil {
 		log.Fatal(err)

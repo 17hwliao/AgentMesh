@@ -22,6 +22,7 @@ type Config struct {
 	APIKey                 string
 	Name                   string
 	Models                 map[string]string
+	NoAuth                 bool
 	DisableThinking        bool
 	UseMaxCompletionTokens bool
 	VisionModels           []string
@@ -35,6 +36,7 @@ type Adapter struct {
 	client                 *http.Client
 	name                   string
 	models                 map[string]string
+	noAuth                 bool
 	disableThinking        bool
 	useMaxCompletionTokens bool
 	visionModels           map[string]bool
@@ -43,7 +45,7 @@ type Adapter struct {
 
 func New(config Config, client *http.Client) (*Adapter, error) {
 	baseURL, err := providerconfig.BaseURL(config.BaseURL)
-	if err != nil || (len(config.Models) == 0 && !providerconfig.ModelValid(config.Model)) || !providerconfig.KeyValid(config.APIKey) || len(config.Models) > 32 {
+	if err != nil || (len(config.Models) == 0 && !providerconfig.ModelValid(config.Model)) || (!config.NoAuth && !providerconfig.KeyValid(config.APIKey)) || len(config.Models) > 32 {
 		return nil, errors.New("invalid Ark configuration")
 	}
 	if client == nil {
@@ -79,7 +81,7 @@ func New(config Config, client *http.Client) (*Adapter, error) {
 		}
 		tools[alias] = true
 	}
-	return &Adapter{baseURL: baseURL, model: config.Model, apiKey: config.APIKey, client: &copyClient, name: name, models: models, disableThinking: config.DisableThinking, useMaxCompletionTokens: config.UseMaxCompletionTokens, visionModels: vision, toolModels: tools}, nil
+	return &Adapter{baseURL: baseURL, model: config.Model, apiKey: config.APIKey, client: &copyClient, name: name, models: models, noAuth: config.NoAuth, disableThinking: config.DisableThinking, useMaxCompletionTokens: config.UseMaxCompletionTokens, visionModels: vision, toolModels: tools}, nil
 }
 
 func (a *Adapter) SupportsImages(alias string) bool { return a.visionModels[alias] }
@@ -104,7 +106,7 @@ func (a *Adapter) Health(ctx context.Context) error {
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return provider.ErrUpstream
+		return &provider.UpstreamStatusError{Status: response.StatusCode}
 	}
 	return nil
 }
@@ -180,7 +182,7 @@ func (a *Adapter) Stream(ctx context.Context, input provider.ChatRequest, emit p
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return provider.ErrUpstream
+		return &provider.UpstreamStatusError{Status: response.StatusCode}
 	}
 
 	reader := sse.NewReader(response.Body)
@@ -300,6 +302,8 @@ func (a *Adapter) request(ctx context.Context, method, path string, body []byte)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+a.apiKey)
+	if !a.noAuth {
+		request.Header.Set("Authorization", "Bearer "+a.apiKey)
+	}
 	return request, nil
 }

@@ -43,6 +43,11 @@ __pycache__/
 *.pyc
 secrets/
 backups/
+agentmesh.lock
+
+# Source package named secrets is not a runtime secret directory.
+!/internal/secrets/
+!/internal/secrets/**
 
 # Frontend dependencies, generated bundle and private console configuration
 /web/node_modules/

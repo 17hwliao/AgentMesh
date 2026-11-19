@@ -4,6 +4,12 @@
 
 2026-10-16：[OpenCode / Claude Code 接入](client-integration.md)、[New API 差异与优先级](new-api-gap-analysis.md)。模型发现、标准 Chat/工具、Messages 转换与两个实际 CLI 的千问 Read 往返已实现。[上下文与图片说明](gateway-protocol-design.md)保留设计背景。后端/计费另见 [扩展契约](backend-roadmap.md)；下方切片验证记录保留历史范围。
 
+2026-11-16：[中转控制面路线图](RELAY-ROADMAP.zh-CN.md) 与 [单机控制面设计](standalone-control-plane.zh-CN.md) 已建立设计基线。S1a、S1b、S2、S2.5 已具备本地实现和自动测试；S3/S4 仅完成 loopback + httptest TLS 的本地模拟验收，均不构成真实局域网、公网或生产发布。规格见 [026](../specs/026-standalone-control-plane/spec.md)，决策见 [005](../decisions/005-standalone-control-plane.md)、[006](../decisions/006-free-pool-isolation.md)。阶段记录见 [S0](acceptance/S0.md)、[S1a](acceptance/S1a.md)、[S1b](acceptance/S1b.md)、[S2](acceptance/S2.md)、[S2.5](acceptance/S2.5.md)、[S3](acceptance/S3.md)、[S4 本地模拟](acceptance/S4-local-simulation.md)，复验命令见 [阶段复验入口](acceptance/README.md)。
+
+2026-11-18：[S3.5 本机宿主与本地模型设计](S3.5-local-host-privacy.zh-CN.md) 已建立分阶段边界；S3.5a 开始实现只读 Agent 扫描与 Ollama/LM Studio 本地模型目录。订阅、配置自动写入、隐私、真实局域网和完整备份仍是后续阶段，规格见 [027](../specs/027-local-host-privacy/spec.md)，决策见 [007](../decisions/007-local-host-subscription-privacy.md)。
+
+2026-11-19：[S3.5a 本机发现与本地模型](acceptance/S3.5a.md) 已通过 Windows 自动验收。后续配置接入、隐私、订阅、局域网和加密备份见 [S3.5 并行开发设计](../specs/027-local-host-privacy/parallel-design.md)。
+
 本目录是现有资料的索引：不移动、不删除、不覆盖 README、规格、决策或私有阶段记录。运行时行为以代码和 015 HTTP 契约为准；路线图只说明计划和边界。
 
 ## 推荐阅读路径
@@ -21,6 +27,7 @@
 | 网关、真实 Adapter、鉴权 | [001](../specs/001-local-mock-stream-gateway/spec.md)、[002](../specs/002-real-provider-adapters/spec.md)、[003 契约](../specs/003-local-api-key-gate/contract.md) |
 | Trace、配额与账务 | [004 契约](../specs/004-observability-trace-records/contract.md)、[005](../specs/005-quota-reservation-state/spec.md)、[006 迁移](../specs/006-quota-reservation-persistence/migration-plan.md)、[011](../specs/011-usage-outbox-ledger/spec.md) |
 | 认证、限流与 API 契约 | [012](../specs/012-token-bucket-rate-limit/spec.md)、[013](../specs/013-tenant-key-persistence/spec.md)、[015](../specs/015-api-contract-consolidation/spec.md) |
+| 中转控制面（设计/验收） | [路线图](RELAY-ROADMAP.zh-CN.md)、[单机设计](standalone-control-plane.zh-CN.md)、[S3.5 设计](S3.5-local-host-privacy.zh-CN.md)、[026](../specs/026-standalone-control-plane/spec.md)、[027](../specs/027-local-host-privacy/spec.md)、[决策 005](../decisions/005-standalone-control-plane.md)、[决策 007](../decisions/007-local-host-subscription-privacy.md)、[S0](acceptance/S0.md)、[S1a](acceptance/S1a.md)、[S1b](acceptance/S1b.md)、[S2](acceptance/S2.md)、[S2.5](acceptance/S2.5.md)、[S3](acceptance/S3.md)、[S4 本地模拟](acceptance/S4-local-simulation.md) |
 | 实测与演示 | [014](../specs/014-real-provider-evidence/spec.md)、[017](../specs/017-local-concurrency-benchmark/spec.md)、[018](../specs/018-admin-api-demo/spec.md)、[021](../specs/021-single-provider-verification/spec.md) |
 | 长期取舍 | [Provider 边界](../decisions/001-provider-adapter-boundary.md)、[Reservation 结算](../decisions/002-reservation-settlement-boundary.md)、[gRPC 延后](../decisions/003-grpc-deferred.md)、[估算用量不退款](../decisions/004-estimated-usage-no-refund.md) |
 

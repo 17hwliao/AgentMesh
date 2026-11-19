@@ -103,6 +103,14 @@ func TenantID(ctx context.Context) (string, bool) {
 	id, ok := ctx.Value(contextKey{}).(string)
 	return id, ok
 }
+
+// WithTenantID lets an alternate authentication boundary populate the
+// compatibility context consumed by the existing gateway/reservation paths.
+// The enterprise Authenticate middleware remains the only writer on its own
+// path.
+func WithTenantID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, contextKey{}, id)
+}
 func reject(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
